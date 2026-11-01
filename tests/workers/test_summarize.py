@@ -143,3 +143,19 @@ async def test_tool_and_system_messages_ignored():
     await summarize_conversation(ctx, "a", "c1")
     assert "FERRAMENTA" not in prompts[0] and "SISTEMA" not in prompts[0]
     assert store.saved[1] == 4
+
+
+@pytest.mark.asyncio
+async def test_summarizer_disables_reasoning():
+    store = FakeStore(turns(4))
+    ctx, _ = make_ctx(store)
+    seen = []
+
+    def fn(messages, info):
+        seen.append(info.model_settings)
+        return ModelResponse(parts=[TextPart("R")])
+
+    ctx["model_factory"] = lambda spec: FunctionModel(fn)
+    assert await summarize_conversation(ctx, "a", "c1") is True
+    # o Qwen3.5 pensa por padrão; sem isso o /v1 gasta o orçamento em `reasoning`
+    assert seen and all(s["extra_body"]["reasoning_effort"] == "none" for s in seen)

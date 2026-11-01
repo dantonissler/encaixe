@@ -56,7 +56,8 @@ def test_settings_and_limits():
     app = make_app(max_steps=2, max_tool_calls=5, timeout_s=33)
     agent = build_agent(app, TestModel(), [])
     ms = agent.model_settings
-    assert ms["extra_body"] == {"options": {"num_ctx": 4096}}
+    # reasoning_effort "none": o Qwen3.5 pensa por padrão e, no /v1, gasta o orçamento em `reasoning`
+    assert ms["extra_body"] == {"options": {"num_ctx": 4096}, "reasoning_effort": "none"}
     assert ms["timeout"] == 33
     lim = usage_limits_for(app)
     assert lim.request_limit == 2 and lim.tool_calls_limit == 5

@@ -18,9 +18,9 @@ async def on_startup(ctx: dict) -> None:
 
 
 async def on_shutdown(ctx: dict) -> None:
-    pool = ctx.get("pool")
-    if pool is not None:
-        await pool.close()
+    from encaixe.wiring import close_worker_deps
+
+    await close_worker_deps(ctx)  # pool, cliente HTTP do embedder e Redis do cache de embeddings
 
 
 class WorkerSettings:

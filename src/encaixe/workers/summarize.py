@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pydantic_ai import Agent
+from pydantic_ai.settings import ModelSettings
 
+from encaixe.agent.factory import NO_REASONING
 from encaixe.context.builder import split_history
 from encaixe.context.tokens import HeuristicTokenCounter
 from encaixe.llm.models import build_model
@@ -45,7 +47,10 @@ async def summarize_conversation(ctx: dict, app_id: str, conversation_id: str) -
 
         factory = ctx.get("model_factory") or (lambda spec: build_model(spec, ctx["settings"]))
         agent = Agent(
-            factory(app.config.models.primary), output_type=str, instructions=SUMMARY_PROMPT
+            factory(app.config.models.primary),
+            output_type=str,
+            instructions=SUMMARY_PROMPT,
+            model_settings=ModelSettings(extra_body=dict(NO_REASONING)),
         )
         running = previous
         for batch in batches:

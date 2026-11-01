@@ -15,6 +15,11 @@ from encaixe.core.config import LoadedApp
 from encaixe.messages import LIMIT_REACHED
 from encaixe.output.schemas import RespostaBase
 
+# O Qwen3.5 "pensa" por padrão: no /v1 do Ollama ele gasta o orçamento de tokens em
+# `reasoning` (conteúdo vazio, ~30 s até o primeiro token). `think: false` não tem efeito
+# no /v1; `reasoning_effort: "none"` desliga. Modelos sem raciocínio ignoram o campo.
+NO_REASONING: dict[str, str] = {"reasoning_effort": "none"}
+
 
 def build_agent(
     app: LoadedApp, model: Model, toolsets: list[AbstractToolset[Any]]
@@ -28,11 +33,12 @@ def build_agent(
     ATENÇÃO: no endpoint OpenAI-compatível `/v1` do Ollama, `options` costuma ser ignorado;
     o contexto efetivo é o do servidor (`OLLAMA_CONTEXT_LENGTH` no docker-compose, ou
     `PARAMETER num_ctx` num Modelfile). Logo, `num_ctx` por app não deve exceder esse valor.
-    O `extra_body` é mantido por ser inofensivo. `timeout` vai em `model_settings` (timeout HTTP
+    O `extra_body` é mantido por ser inofensivo; ele também leva `reasoning_effort: "none"`
+    (ver `NO_REASONING`). `timeout` vai em `model_settings` (timeout HTTP
     por requisição ao modelo); o pipeline também envolve a execução em `asyncio.timeout`.
     """
     settings = ModelSettings(
-        extra_body={"options": {"num_ctx": app.config.context.num_ctx}},
+        extra_body={"options": {"num_ctx": app.config.context.num_ctx}, **NO_REASONING},
         timeout=float(app.config.agent.timeout_s),
     )
     return Agent(
