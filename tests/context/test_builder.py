@@ -20,7 +20,7 @@ def make_app(**budget) -> LoadedApp:
         models=ModelsConfig(primary="test"),
         context=ContextConfig(budget=BudgetConfig(**budget)),
     )
-    tpl = jinja2.Template("Sistema {{ canary }} / {{ boundary }}")
+    tpl = jinja2.Template("Sistema {{ canary }}")
     return LoadedApp(
         config=cfg,
         root=None,
@@ -57,8 +57,8 @@ def test_order_system_then_history_then_rag_in_user_prompt():
         user_message="pergunta final",
     )
     assert "CANARIO123" in ctx.system_prompt
-    assert ctx.boundary in ctx.system_prompt
     assert ctx.user_prompt.endswith("pergunta final")
+    assert ctx.user_prompt.startswith("Os blocos delimitados por <<" + ctx.boundary)
     up = ctx.user_prompt
     assert up.index("tipo=contexto") < up.index("tipo=trechos") < up.index("pergunta final")
     assert ctx.boundary in up
@@ -70,7 +70,7 @@ def test_order_system_then_history_then_rag_in_user_prompt():
     assert isinstance(ctx.history[1].parts[0], UserPromptPart)
     assert isinstance(ctx.history[2], ModelResponse)
     assert isinstance(ctx.history[2].parts[0], TextPart)
-    assert set(ctx.token_usage) == {"system", "summary", "history", "rag", "user"}
+    assert set(ctx.token_usage) == {"system", "summary", "history", "extra", "rag", "user"}
 
 
 def test_history_skips_tool_and_system_roles():
@@ -122,3 +122,47 @@ def test_long_user_message_truncated_to_budget():
     ctx = build(make_app(user=10), user_message="x" * 1000)
     assert ctx.user_prompt.endswith(" [mensagem truncada]")
     assert ctx.user_prompt.count("x") == 30
+
+
+def test_system_prompt_stable_across_builds():
+    app = make_app()
+    a, b = build(app), build(app)
+    assert a.boundary != b.boundary
+    assert a.system_prompt == b.system_prompt
+    assert a.boundary not in a.system_prompt
+
+
+def test_extra_context_shares_rag_budget():
+    app = make_app(rag=200)
+    extra = ["e" * 150, "f" * 150, "g" * 150]
+    chunks = [chunk(f"c{i}", "t" * 120, 1 - i / 10) for i in range(5)]
+    ctx = build(app, extra_context=extra, retrieved=chunks)
+    u = ctx.token_usage
+    assert u["extra"] > 0
+    assert u["extra"] + u["rag"] <= 200
+    assert "ee" in ctx.user_prompt  # extra vem primeiro
+
+
+def test_rag_smaller_lower_score_chunk_fills_remaining():
+    chunks = [chunk("big", "a" * 900, 0.9), chunk("small", "b" * 30, 0.1)]
+    ctx = build(make_app(rag=100), retrieved=chunks)
+    assert "small" in ctx.user_prompt
+    assert "big" not in ctx.user_prompt.replace("tipo", "")
+
+
+def test_rag_cost_counts_toon_overhead():
+    c = chunk("id", "a" * 30, 0.9)
+    # texto sozinho = 10 tokens, mas o item TOON custa mais
+    ctx = build(make_app(rag=10), retrieved=[c])
+    assert "tipo=trechos" not in ctx.user_prompt
+
+
+def test_leading_assistant_orphan_dropped():
+    hist = [
+        ChatMessage("assistant", "orfa", seq=1),
+        ChatMessage("user", "p", seq=2),
+        ChatMessage("assistant", "r", seq=3),
+    ]
+    ctx = build(history=hist)
+    assert len(ctx.history) == 2
+    assert isinstance(ctx.history[0], ModelRequest)

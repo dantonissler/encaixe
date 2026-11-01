@@ -15,7 +15,7 @@ def test_load_example_app():
     assert issubclass(app.output_model, RespostaBase)
     assert len(app.prompt_version) == 12
     out = app.system_prompt.render(canary="CANARY123", boundary="BND")
-    assert "CANARY123" in out and "BND" in out and "Aurora Ltda" in out
+    assert "CANARY123" in out and "<<DADOS-" in out and "Aurora Ltda" in out
 
 
 def _copy(tmp_path: Path) -> Path:

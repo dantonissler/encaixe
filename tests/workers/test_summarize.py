@@ -75,3 +75,71 @@ async def test_noop_when_within_budget():
     ctx, _ = make_ctx(store, history_budget=1000)
     assert await summarize_conversation(ctx, "a", "c1") is False
     assert store.saved is None
+
+
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
+
+
+def capturing_ctx(store, history_budget=45):
+    ctx, _ = make_ctx(store, history_budget)
+    prompts = []
+
+    def fn(messages, info):
+        text = "\n".join(
+            p.content
+            for m in messages
+            for p in m.parts
+            if getattr(p, "part_kind", "") == "user-prompt"
+        )
+        prompts.append(text)
+        return ModelResponse(parts=[TextPart(f"R{len(prompts)}")])
+
+    ctx["model_factory"] = lambda spec: FunctionModel(fn)
+    return ctx, prompts
+
+
+@pytest.mark.asyncio
+async def test_previous_summary_reaches_model():
+    store = FakeStore(turns(4), summary=("RESUMO VELHO", 0))
+    ctx, prompts = capturing_ctx(store)
+    await summarize_conversation(ctx, "a", "c1")
+    assert "RESUMO VELHO" in prompts[0]
+    assert "0" * 30 in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_idempotent_rerun_returns_false():
+    store = FakeStore(turns(4))
+    ctx, _ = make_ctx(store)
+    assert await summarize_conversation(ctx, "a", "c1") is True
+    summary, covers = store.saved
+    store.summary = (summary, covers)
+    assert await summarize_conversation(ctx, "a", "c1") is False
+
+
+@pytest.mark.asyncio
+async def test_large_backlog_is_batched():
+    msgs = []
+    for i in range(10):
+        msgs.append(ChatMessage("user", "u" * 3000, seq=2 * i + 1))  # 1000 tokens
+        msgs.append(ChatMessage("assistant", "a" * 3000, seq=2 * i + 2))
+    store = FakeStore(msgs)
+    ctx, prompts = capturing_ctx(store, history_budget=4000)
+    assert await summarize_conversation(ctx, "a", "c1") is True
+    assert len(prompts) > 1
+    assert "R1" in prompts[1]  # resumo corrente avança para o próximo lote
+    assert store.saved[0] == f"R{len(prompts)}"
+    assert store.saved[1] == 16  # mantém 2 turnos (4000 tokens); cobre seq 1..16
+
+
+@pytest.mark.asyncio
+async def test_tool_and_system_messages_ignored():
+    msgs = turns(4)
+    msgs.insert(3, ChatMessage("tool", "FERRAMENTA", seq=100))
+    msgs.insert(3, ChatMessage("system", "SISTEMA", seq=101))
+    store = FakeStore(msgs)
+    ctx, prompts = capturing_ctx(store)
+    await summarize_conversation(ctx, "a", "c1")
+    assert "FERRAMENTA" not in prompts[0] and "SISTEMA" not in prompts[0]
+    assert store.saved[1] == 4
