@@ -50,10 +50,10 @@ def setup_logging(settings: Settings) -> None:
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
-            add_trace_ids,
             make_drop_full_text(settings.log_full_text),
             structlog.processors.format_exc_info,
             mask_pii_processor,
+            add_trace_ids,  # depois do mascaramento: ids hex nunca sao alterados
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),

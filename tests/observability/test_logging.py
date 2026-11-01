@@ -40,3 +40,22 @@ def test_keeps_prompt_when_enabled(capsys):
     setup_logging(Settings(log_full_text=True))
     structlog.get_logger().info("x", prompt="p")
     assert _last(capsys)["prompt"] == "p"
+
+
+def test_trace_ids_not_corrupted_by_pii_mask(capsys):
+    from opentelemetry.sdk.trace.id_generator import IdGenerator
+
+    class Digits(IdGenerator):
+        def generate_span_id(self):
+            return int("1234567890123456", 16)
+
+        def generate_trace_id(self):
+            return int("12345678901234567890123456789012", 16)
+
+    setup_logging(Settings())
+    tracer = TracerProvider(id_generator=Digits()).get_tracer("t")
+    with tracer.start_as_current_span("s"):
+        structlog.get_logger().info("x")
+    data = _last(capsys)
+    assert data["trace_id"] == "12345678901234567890123456789012"
+    assert data["span_id"] == "1234567890123456"

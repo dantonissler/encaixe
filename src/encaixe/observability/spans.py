@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -72,15 +73,49 @@ class traced:
         return self._cm.__exit__(exc_type, exc, tb)
 
     def __call__(self, fn: Callable) -> Callable:
-        import inspect
-
         if inspect.isasyncgenfunction(fn):
 
             @functools.wraps(fn)
             async def agen_wrapper(*a, **kw):
-                with traced(self.name, **self.attrs):
-                    async for item in fn(*a, **kw):
-                        yield item
+                tracer = trace.get_tracer("encaixe", tracer_provider=_provider)
+                span = tracer.start_span(
+                    f"encaixe.{self.name}", attributes={**_ctx_attributes(), **self.attrs}
+                )
+
+                def current():
+                    return trace.use_span(
+                        span,
+                        end_on_exit=False,
+                        record_exception=False,
+                        set_status_on_exception=False,
+                    )
+
+                gen = fn(*a, **kw)
+                action = gen.asend(None)
+                try:
+                    while True:
+                        try:
+                            with current():
+                                item = await action
+                        except StopAsyncIteration:
+                            return
+                        try:
+                            sent = yield item
+                            action = gen.asend(sent)
+                        except GeneratorExit:
+                            with current():
+                                await gen.aclose()
+                            raise
+                        except BaseException as exc:  # noqa: BLE001 - athrow do consumidor
+                            action = gen.athrow(exc)
+                except GeneratorExit:
+                    raise
+                except Exception as exc:
+                    span.record_exception(exc)
+                    span.set_status(Status(StatusCode.ERROR, str(exc)))
+                    raise
+                finally:
+                    span.end()
 
             return agen_wrapper
         if inspect.iscoroutinefunction(fn):
