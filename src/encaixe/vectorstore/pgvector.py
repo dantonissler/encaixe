@@ -17,6 +17,8 @@ def rrf_fuse(ranked_lists: list[list[str]], k: int = 60) -> list[tuple[str, floa
     return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
 
 
+EMBEDDING_DIMS = 1024
+
 _VECTOR_SQL = """
 SELECT id::text FROM chunks
 WHERE app_id = $1 AND acl_principals && $2::text[] AND embedding IS NOT NULL
@@ -27,6 +29,7 @@ LIMIT $4
 _FTS_SQL = """
 SELECT id::text FROM chunks
 WHERE app_id = $1 AND acl_principals && $2::text[]
+  AND numnode(websearch_to_tsquery('pt_unaccent', $3)) > 0
   AND tsv @@ websearch_to_tsquery('pt_unaccent', $3)
 ORDER BY ts_rank_cd(tsv, websearch_to_tsquery('pt_unaccent', $3)) DESC, id
 LIMIT $4
@@ -76,6 +79,8 @@ class PgVectorStore:
             raise ValueError("upsert com chunks de apps diferentes")
         if any(c.embedding is None for c in chunks):
             raise ValueError("chunk sem embedding")
+        if any(len(c.embedding or ()) != EMBEDDING_DIMS for c in chunks):
+            raise ValueError(f"embedding deve ter {EMBEDDING_DIMS} dimensões")
         (app_id,) = app_ids
         rows = [
             (
@@ -113,11 +118,7 @@ class PgVectorStore:
                 ]
                 fts_ids: list[str] = []
                 if text.strip():
-                    has_query = await conn.fetchval(
-                        "SELECT websearch_to_tsquery('pt_unaccent', $1)::text <> ''", text
-                    )
-                    if has_query:
-                        fts_ids = [r["id"] for r in await conn.fetch(_FTS_SQL, app_id, acl, text, k)]
+                    fts_ids = [r["id"] for r in await conn.fetch(_FTS_SQL, app_id, acl, text, k)]
                 fused = rrf_fuse([vec_ids, fts_ids])
                 if not fused:
                     return []

@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from structlog.testing import capture_logs
 
 from encaixe.core.types import Chunk, Principals, ScoredChunk
+from encaixe.observability import spans
 from encaixe.rag.rerank import CrossEncoderReranker, NoopReranker
 from encaixe.rag.retriever import HybridRetriever
 
@@ -69,3 +75,30 @@ async def test_cross_encoder_sorts_with_fake_model():
     await rr.rerank("q", [sc(1)], 1)
     assert loads == ["m"]
     assert await rr.rerank("q", [], 2) == []
+
+
+@pytest.fixture
+def exporter():
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+    spans.use_tracer_provider(provider)
+    yield exp
+    spans.use_tracer_provider(None)
+
+
+async def test_degraded_span_attribute_and_warning(exporter):
+    r = HybridRetriever(FakeEmbedder(), FakeStore(), BoomReranker())
+    with capture_logs() as logs:
+        await r.retrieve("a", Principals(None), "q", 10, 3)
+    span = next(s for s in exporter.get_finished_spans() if s.name == "encaixe.rag.retrieve")
+    assert span.attributes["rerank.degraded"] is True
+    warn = [e for e in logs if e["log_level"] == "warning"]
+    assert warn and warn[0]["error_type"] == "RuntimeError"
+
+
+async def test_no_degraded_attribute_on_success(exporter):
+    r = HybridRetriever(FakeEmbedder(), FakeStore(), NoopReranker())
+    await r.retrieve("a", Principals(None), "q", 10, 3)
+    span = next(s for s in exporter.get_finished_spans() if s.name == "encaixe.rag.retrieve")
+    assert "rerank.degraded" not in span.attributes
