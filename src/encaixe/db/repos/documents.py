@@ -67,21 +67,41 @@ async def set_status(
             )
 
 
-async def get_document(pool: asyncpg.Pool, app_id: str, document_id: str) -> Document | None:
-    with traced("db.documents.get"):
-        async with app_scope(pool, app_id, None, system=True) as conn:
-            r = await conn.fetchrow(
-                "SELECT id::text, app_id, title, source_path, acl, status, quarantined, error "
-                "FROM documents WHERE app_id = $1 AND id = $2::uuid",
-                app_id,
-                document_id,
-            )
+_DOCUMENT_COLUMNS = "id::text, app_id, title, source_path, acl, status, quarantined, error"
+
+
+def _document(r: asyncpg.Record | None) -> Document | None:
     if r is None:
         return None
     return Document(
         r["id"], r["app_id"], r["title"], r["source_path"], list(r["acl"]),
         r["status"], r["quarantined"], r["error"],
     )  # fmt: skip
+
+
+async def get_document(pool: asyncpg.Pool, app_id: str, document_id: str) -> Document | None:
+    with traced("db.documents.get"):
+        async with app_scope(pool, app_id, None, system=True) as conn:
+            r = await conn.fetchrow(
+                f"SELECT {_DOCUMENT_COLUMNS} FROM documents WHERE app_id = $1 AND id = $2::uuid",
+                app_id,
+                document_id,
+            )
+    return _document(r)
+
+
+async def get_document_by_hash(
+    pool: asyncpg.Pool, app_id: str, content_hash: str
+) -> Document | None:
+    """O documento da app com este hash (o que barrou um upload duplicado)."""
+    with traced("db.documents.get_by_hash"):
+        async with app_scope(pool, app_id, None, system=True) as conn:
+            r = await conn.fetchrow(
+                f"SELECT {_DOCUMENT_COLUMNS} FROM documents WHERE app_id = $1 AND content_hash = $2",
+                app_id,
+                content_hash,
+            )
+    return _document(r)
 
 
 async def delete_document(pool: asyncpg.Pool, app_id: str, document_id: str) -> None:

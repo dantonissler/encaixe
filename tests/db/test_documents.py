@@ -18,3 +18,11 @@ async def test_dedup_status_and_corpus_version(pg_pool):
     assert await docs.bump_corpus_version(pg_pool, "appx") == 2
     await docs.delete_document(pg_pool, "appx", d1)
     assert await docs.get_document(pg_pool, "appx", d1) is None
+
+
+async def test_get_document_by_hash_is_scoped_by_app(pg_pool):
+    d1 = await docs.create_document(pg_pool, "appx", "T", "/x.md", "h1", ["group:rh"])
+    found = await docs.get_document_by_hash(pg_pool, "appx", "h1")
+    assert (found.id, found.acl, found.status) == (d1, ["group:rh"], "pending")
+    assert await docs.get_document_by_hash(pg_pool, "appy", "h1") is None
+    assert await docs.get_document_by_hash(pg_pool, "appx", "h2") is None
