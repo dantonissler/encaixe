@@ -61,3 +61,11 @@ async def test_output_guards_use_citations_and_text(settings, make_ctx):
         ["canary", "citations"], out, make_ctx(), settings=settings, fail_closed=True
     )
     assert [r.guard for r in res] == ["canary", "citations"] and res[-1].verdict == "block"
+
+
+async def test_cache_matches_by_settings_identity(make_ctx):
+    from encaixe.settings import Settings
+
+    a, b = Settings(), Settings()
+    assert runner.get_guard("canary", a) is runner.get_guard("canary", a)
+    assert runner.get_guard("canary", a) is not runner.get_guard("canary", b)

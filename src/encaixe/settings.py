@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     max_concurrent_generations: int = 1
     max_queue: int = 5
     queue_timeout_s: int = 60
-    injection_model_id: str = "protectai/deberta-v3-base-prompt-injection-v2"
+    injection_backend: Literal["heuristic", "model"] = "heuristic"
+    injection_model_id: str = "meta-llama/Llama-Prompt-Guard-2-86M"
     injection_threshold: float = 0.9
     safety_model: str = "llama-guard3-1b-cpu"
     embedding_model: str = "bge-m3-cpu"

@@ -36,3 +36,10 @@ async def test_output_sends_pair_and_garbage_raises(settings, make_ctx):
 
     with pytest.raises(ValueError):
         await LlamaGuard(settings).check("x", make_ctx())
+
+
+@respx.mock
+async def test_unsafe_without_categories_and_leading_whitespace(settings, make_ctx):
+    respx.post(f"{settings.ollama_base_url}/api/chat").mock(return_value=_reply("\n  unsafe"))
+    r = await LlamaGuard(settings).check("x", make_ctx())
+    assert r.verdict == "block" and r.reason == ""

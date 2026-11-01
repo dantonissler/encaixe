@@ -7,14 +7,17 @@ from encaixe.core.types import GuardResult, RequestContext
 from encaixe.guardrails import canary, citations, injection, normalize, pii_guard, safety  # noqa: F401
 from encaixe.output.schemas import RespostaBase
 
-_CACHE: dict[tuple[str, int], Any] = {}
+# A entrada guarda o settings para casar por identidade (id() pode ser reaproveitado após GC).
+_CACHE: dict[tuple[str, int], tuple[Any, Any]] = {}
 
 
 def get_guard(name: str, settings: Any) -> Any:
     key = (name, id(settings))
-    if key not in _CACHE:
-        _CACHE[key] = create("guard", name, settings=settings)
-    return _CACHE[key]
+    entry = _CACHE.get(key)
+    if entry is None or entry[0] is not settings:
+        entry = (settings, create("guard", name, settings=settings))
+        _CACHE[key] = entry
+    return entry[1]
 
 
 async def _run(names, settings, fail_closed, call) -> list[GuardResult]:
