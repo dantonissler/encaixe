@@ -9,11 +9,13 @@ from pydantic_ai.toolsets import FunctionToolset
 from encaixe.agent.loop_guard import LoopDetected, LoopGuard, wrap_toolsets
 
 
-def make_toolset() -> FunctionToolset:
+def make_toolset(calls: list | None = None) -> FunctionToolset:
     ts = FunctionToolset()
 
     @ts.tool_plain
     def buscar(q: str) -> str:
+        if calls is not None:
+            calls.append(q)
         return f"res {q}"
 
     return ts
@@ -33,10 +35,22 @@ def caller(args_seq):
 
 
 async def test_detects_repeated_identical_calls():
-    agent = Agent(caller([{"q": "a"}] * 5), toolsets=wrap_toolsets([make_toolset()], max_repeats=3))
+    calls: list = []
+    agent = Agent(caller([{"q": "a"}] * 5), toolsets=wrap_toolsets([make_toolset(calls)], max_repeats=3))
     with pytest.raises(LoopDetected) as ei:
         await agent.run("oi")
     assert ei.value.tool_name == "buscar"
+    assert len(calls) == 2  # a 3a chamada idêntica é barrada antes de executar
+
+
+async def test_counts_do_not_leak_across_runs():
+    calls: list = []
+    ts = make_toolset(calls)
+    for _ in range(2):  # guards novos por execução: 2 chamadas idênticas por run, sem loop
+        agent = Agent(caller([{"q": "a"}] * 2), toolsets=wrap_toolsets([ts], max_repeats=3))
+        result = await agent.run("oi")
+        assert result.output
+    assert len(calls) == 4
 
 
 async def test_different_args_not_a_loop():

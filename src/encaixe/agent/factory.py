@@ -23,7 +23,12 @@ def build_agent(
 
     O system prompt NÃO é fixado aqui: o pipeline passa `instructions=built.system_prompt`
     em cada `agent.run(...)`/`run_stream(...)`. `num_ctx` vai por `extra_body.options`
-    (o v2 não tem `OllamaModelSettings`). `timeout` vai em `model_settings` (timeout HTTP
+    (o v2 não tem `OllamaModelSettings`).
+
+    ATENÇÃO: no endpoint OpenAI-compatível `/v1` do Ollama, `options` costuma ser ignorado;
+    o contexto efetivo é o do servidor (`OLLAMA_CONTEXT_LENGTH` no docker-compose, ou
+    `PARAMETER num_ctx` num Modelfile). Logo, `num_ctx` por app não deve exceder esse valor.
+    O `extra_body` é mantido por ser inofensivo. `timeout` vai em `model_settings` (timeout HTTP
     por requisição ao modelo); o pipeline também envolve a execução em `asyncio.timeout`.
     """
     settings = ModelSettings(
