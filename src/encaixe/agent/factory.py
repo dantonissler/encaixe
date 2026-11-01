@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic_ai import Agent
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.models import Model
+from pydantic_ai.output import NativeOutput
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.usage import UsageLimits
+
+from encaixe.agent.loop_guard import LoopDetected
+from encaixe.core.config import LoadedApp
+from encaixe.messages import LIMIT_REACHED
+from encaixe.output.schemas import RespostaBase
+
+
+def build_agent(
+    app: LoadedApp, model: Model, toolsets: list[AbstractToolset[Any]]
+) -> Agent[Any, RespostaBase]:
+    """Agente com saída estruturada nativa.
+
+    O system prompt NÃO é fixado aqui: o pipeline passa `instructions=built.system_prompt`
+    em cada `agent.run(...)`/`run_stream(...)`. `num_ctx` vai por `extra_body.options`
+    (o v2 não tem `OllamaModelSettings`). `timeout` vai em `model_settings` (timeout HTTP
+    por requisição ao modelo); o pipeline também envolve a execução em `asyncio.timeout`.
+    """
+    settings = ModelSettings(
+        extra_body={"options": {"num_ctx": app.config.context.num_ctx}},
+        timeout=float(app.config.agent.timeout_s),
+    )
+    return Agent(
+        model,
+        output_type=NativeOutput(app.output_model),
+        toolsets=toolsets,
+        retries={"output": 2},
+        model_settings=settings,
+    )
+
+
+def usage_limits_for(app: LoadedApp) -> UsageLimits:
+    return UsageLimits(
+        request_limit=app.config.agent.max_steps,
+        tool_calls_limit=app.config.agent.max_tool_calls,
+    )
+
+
+def run_outcome_on_limit(
+    exc: UsageLimitExceeded | LoopDetected, tools_called: list[str] | None = None
+) -> RespostaBase:
+    message = LIMIT_REACHED
+    if tools_called:
+        message += f" Ferramentas usadas: {', '.join(tools_called)}."
+    return RespostaBase(resposta=message, citacoes=[])
