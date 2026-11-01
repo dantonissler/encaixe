@@ -13,6 +13,10 @@ class EmbeddingDimensionError(ValueError):
     pass
 
 
+class EmbeddingResponseError(ValueError):
+    pass
+
+
 class OllamaEmbedder:
     def __init__(
         self,
@@ -42,7 +46,10 @@ class OllamaEmbedder:
             json={"model": self.model_name, "input": batch},
         )
         resp.raise_for_status()
-        vectors = resp.json()["embeddings"]
+        try:
+            vectors = resp.json()["embeddings"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise EmbeddingResponseError("resposta de /api/embed sem 'embeddings'") from exc
         if len(vectors) != len(batch):
             raise EmbeddingDimensionError(
                 f"esperados {len(batch)} vetores, recebidos {len(vectors)}"

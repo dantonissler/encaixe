@@ -23,18 +23,35 @@ class CircuitBreaker:
         self._failures = 0
         self._opened_at = 0.0
         self._state: State = "closed"
+        self._trial_at = 0.0
+
+    @property
+    def failures(self) -> int:
+        return self._failures
 
     @property
     def state(self) -> State:
         return self._state
 
-    def allow(self) -> bool:
+    def available(self) -> bool:
+        """Não muta estado: o modelo pode ser tentado agora? half_open rearma se o
+        teste ficou pendente por mais de `reset_after_s`."""
         if self._state == "closed":
             return True
-        if self._state == "open" and self._clock() - self._opened_at >= self.reset_after_s:
+        ref = self._opened_at if self._state == "open" else self._trial_at
+        return self._clock() - ref >= self.reset_after_s
+
+    def try_acquire(self) -> bool:
+        """Reivindica a tentativa (marca half_open) quando a chamada realmente começa."""
+        if self._state == "closed":
+            return True
+        if self.available():
             self._state = "half_open"
-            return True  # única tentativa de teste
+            self._trial_at = self._clock()
+            return True
         return False
+
+    allow = try_acquire
 
     def record_success(self) -> None:
         self._failures = 0

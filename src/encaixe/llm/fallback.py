@@ -21,6 +21,7 @@ class BreakerModel(WrapperModel):
         self.breaker = breaker
 
     async def request(self, messages, model_settings, model_request_parameters):
+        self.breaker.try_acquire()
         try:
             response = await self.wrapped.request(messages, model_settings, model_request_parameters)
         except Exception:
@@ -33,13 +34,21 @@ class BreakerModel(WrapperModel):
     async def request_stream(
         self, messages, model_settings, model_request_parameters, run_context=None
     ):
+        self.breaker.try_acquire()
+        entered = False
         try:
             async with self.wrapped.request_stream(
                 messages, model_settings, model_request_parameters, run_context
             ) as stream:
-                yield stream
+                entered = True
+                try:
+                    yield stream
+                except (ModelAPIError, httpx.TransportError):
+                    self.breaker.record_failure()
+                    raise
         except Exception:
-            self.breaker.record_failure()
+            if not entered:
+                self.breaker.record_failure()
             raise
         self.breaker.record_success()
 
@@ -52,7 +61,7 @@ def build_chain(
     primary: str, fallbacks: list[str], settings: Settings, breakers: BreakerRegistry
 ) -> tuple[Model, list[str]]:
     specs = [primary, *fallbacks]
-    effective = [s for s in specs if breakers.get(s).allow()]
+    effective = [s for s in specs if breakers.get(s).available()]
     if not effective:
         effective = [specs[-1]]  # nunca devolve cadeia vazia
     models = [wrap_with_breaker(build_model(s, settings), s, breakers) for s in effective]

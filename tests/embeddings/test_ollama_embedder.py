@@ -3,7 +3,11 @@ import pytest
 import respx
 
 from encaixe.cache.embeddings import EmbeddingCache
-from encaixe.embeddings.ollama import EmbeddingDimensionError, OllamaEmbedder
+from encaixe.embeddings.ollama import (
+    EmbeddingDimensionError,
+    EmbeddingResponseError,
+    OllamaEmbedder,
+)
 
 
 def _responder(dims=1024):
@@ -35,5 +39,34 @@ async def test_wrong_dimension_raises(settings):
     respx.post(f"{settings.ollama_base_url}/api/embed").mock(side_effect=_responder(8))
     emb = OllamaEmbedder(settings, None)
     with pytest.raises(EmbeddingDimensionError):
+        await emb.embed(["a"])
+    await emb.aclose()
+
+
+@respx.mock
+async def test_partial_cache_hits_keep_order(settings, fake_redis):
+    cache = EmbeddingCache(fake_redis)
+    await cache.set_many(settings.embedding_model, ["b"], [[2.0] * 1024])
+
+    def handler(request):
+        import json
+
+        inp = json.loads(request.content)["input"]
+        return httpx.Response(200, json={"embeddings": [[float(ord(t))] * 1024 for t in inp]})
+
+    respx.post(f"{settings.ollama_base_url}/api/embed").mock(side_effect=handler)
+    emb = OllamaEmbedder(settings, cache)
+    out = await emb.embed(["a", "b", "c"])
+    assert [v[0] for v in out] == [97.0, 2.0, 99.0]
+    await emb.aclose()
+
+
+@respx.mock
+async def test_malformed_response_raises(settings):
+    respx.post(f"{settings.ollama_base_url}/api/embed").mock(
+        return_value=httpx.Response(200, json={"oops": 1})
+    )
+    emb = OllamaEmbedder(settings, None)
+    with pytest.raises(EmbeddingResponseError):
         await emb.embed(["a"])
     await emb.aclose()
