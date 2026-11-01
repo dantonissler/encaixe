@@ -20,6 +20,7 @@ dependencies = [
     "sentence-transformers>=6.2",
     "transformers>=5.22",
     "torch",
+    "torchvision",
     "fastapi>=0.162",
     "uvicorn[standard]",
     "python-multipart",
@@ -51,6 +52,7 @@ packages = ["src/encaixe"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
