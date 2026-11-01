@@ -6,35 +6,43 @@ import unicodedata
 from encaixe.guardrails.normalize import strip_invisible
 
 _VERB_IGN = r"(?:ignor\w*|desconsider\w*|esquec\w*|disregard|forget|override)"
-_NOUN = r"(?:instrucoes|regras|orientacoes|diretrizes|instructions|rules|prompts?|guidelines)"
-_QUAL = r"(?:anteriores|anterior|acima|do sistema|previous|prior|above|system)"
-_DET = r"(?:(?:todas|all|any|the|your|suas|as|essas|these|those|those)\s+)*"
-_SHOW = r"(?:revel\w*|mostr\w*|imprim\w*|exib\w*|repit\w*|copi\w*)"
-_POSS = r"(?:(?:todas|todos|as|os|o|a|seu|seus|sua|suas)\s+)*"
+_NOUN = r"(?:instrucoes|instructions|prompts?|diretrizes|orientacoes|guidelines)"
+_QUAL = r"(?:anteriores|anterior|acima|previous|prior|above|do sistema)"
+_DET = r"(?:(?:todas|all|any|the|your|suas|as|essas|these|those)\s+)*"
+_DIRECTIVE = (
+    r"(?:revel\w*|mostr\w*|imprim\w*|exib\w*|repit\w*|copi\w*|vaz\w*|"
+    r"reveal|print|show|repeat|output|leak|dump)"
+)
+_PROMPT_TARGET = (
+    r"(?:(?:o\s+)?(?:seu|teu)\s+prompt|suas\s+instrucoes\s+(?:internas|iniciais|originais|do sistema)|"
+    r"your\s+(?:system\s+)?prompt|your\s+(?:initial|original|hidden)\s+instructions|"
+    r"(?:o\s+)?prompt\s+do\s+sistema(?!\s+operacional)|system\s+prompt)"
+)
 
-# Padrões sobre o texto com todo espaço colapsado.
+# Padrões sobre o texto com todo espaço colapsado (precisão acima de recall: documentos
+# ingeridos que disparam ficam em quarentena).
 _FLAT = {
-    "ignore_instructions": rf"\b{_VERB_IGN}\s+{_DET}{_NOUN}\s+{_QUAL}|"
-    rf"\b{_VERB_IGN}\s+(?:todas|all)\s+(?:as\s+|the\s+)?(?:{_QUAL}\s+)?{_NOUN}|"
-    rf"\b{_VERB_IGN}\s+(?:the\s+|any\s+|as\s+)?{_QUAL}\s+{_NOUN}",
-    "forget_everything": r"\b(?:forget|esqueca|esquecer)\s+(?:everything|all|tudo)\s+"
-    r"(?:above|previous|prior|o que foi dito|acima|que (?:foi dito|eu disse))",
-    "reveal_prompt_pt": rf"\b{_SHOW}\s+{_POSS}(?:prompt|instrucoes)\s+"
-    r"(?:do sistema|internas|iniciais|originais)|"
-    rf"\b{_SHOW}\s+{_POSS}prompt\b",
-    "reveal_prompt_en": r"\b(?:reveal|print|show|repeat|output|display)\s+(?:me\s+)?(?:your|the)\s+"
-    r"(?:system\s+)?(?:prompt|instructions)",
-    "system_prompt": r"\bprompt do sistema\b|\bsystem prompt\b",
-    "persona": r"\bvoce (?:agora )?e um assistente sem (?:restricoes|filtros|limites)|"
-    r"\byou are now\b|\bdeveloper mode\b|\bmodo desenvolvedor\b|\bdan\b|\bjailbreak\b|"
-    r"\bassistente sem (?:restricoes|filtros|limites)",
+    "ignore_instructions": rf"\b{_VERB_IGN}\s+{_DET}(?:(?:previous|prior|above|anteriores)\s+)?"
+    rf"{_NOUN}(?:\s+{_QUAL})?",
+    "forget_everything": r"\besque(?:ca|cer)\s+(?:(?:todas\s+)?as\s+)?(?:suas\s+)?instrucoes|"
+    r"\besque(?:ca|cer)\s+tudo\s+(?:o\s+)?que\s+(?:te|lhe)\s+(?:foi dito|disseram|instruiram)|"
+    r"\bforget\s+(?:all|everything)\s+(?:you were told|above|your instructions|previous instructions)",
+    "persona": r"\byou are now (?:a|an) .{0,40}\b(?:assistant|ai|model|bot|"
+    r"without (?:restrictions|filters|limits))\b|"
+    r"\bvoce (?:agora )?e uma? (?:assistente|ia|modelo|bot)\b.{0,30}sem (?:restricoes|filtros|limites)|"
+    r"\bdo anything now\b|"
+    r"\b(?:ative|ativar|ativa|entre no|entre em|enable|enter|activate)\s+(?:o\s+|the\s+)?"
+    r"(?:modo\s+|mode\s+)?(?:dan|jailbreak)\b|"
+    r"\b(?:ative|ativar|entre no|entre em|enable|enter|activate)\s+(?:o\s+|the\s+)?"
+    r"(?:modo desenvolvedor|developer mode)\b",
     "new_instructions": r"\b(?:novas|new)\s+(?:instrucoes|instructions)\s*:",
-    "attention": r"\batencao,?\s+(?:assistente|ia|modelo)\b|\battention,?\s+(?:assistant|ai|model)\b",
+    "attention": r"\b(?:atencao|attention),?\s+(?:assistente|assistant)\s*[:!]",
+    "chat_template": r"<\|im_start\|>|<\|im_end\|>|\[inst\]|<<sys>>|<\|system\|>",
 }
-# Marcadores de papel dependem de quebra de linha.
+# Dependem de quebras de linha (espaços/tabs colapsados, \n preservado).
 _LINES = {
-    "role_marker": r"^\s*(?:system|sistema|assistant|assistente)\s*:",
-    "chat_template": r"<\|im_start\|>|\[inst\]|###\s*(?:system|instruction)",
+    "reveal_prompt": rf"\b{_DIRECTIVE}\b[^.!?\n]{{0,60}}?{_PROMPT_TARGET}",
+    "markdown_system": r"^\s*###\s*(?:system|instructions?)s?\s*:?",
 }
 _FLAT_RX = {k: re.compile(v) for k, v in _FLAT.items()}
 _LINE_RX = {k: re.compile(v, re.MULTILINE) for k, v in _LINES.items()}
