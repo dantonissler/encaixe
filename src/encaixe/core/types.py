@@ -13,6 +13,13 @@ class Principals:
     user_ref: str | None
     groups: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        # Os principais viajam como lista separada por vírgulas (setting do Postgres):
+        # vírgula ou valor vazio permitiriam injetar principais extras.
+        values = [v for v in (self.user_ref, *self.groups) if v is not None]
+        if self.user_ref == "" or any(v == "" or "," in v for v in values):
+            raise ValueError("principals inválidos: vazios ou com vírgula")
+
     def as_list(self) -> list[str]:
         result = ["app:*"]
         if self.user_ref:

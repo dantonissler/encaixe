@@ -122,14 +122,18 @@ CREATE POLICY app_isolation ON tool_approvals
 CREATE POLICY app_isolation ON chunks
     USING (app_id = current_setting('encaixe.app_id', true))
     WITH CHECK (app_id = current_setting('encaixe.app_id', true));
--- Política restritiva: leitura/alteração de chunks exige interseção de ACL com os principais.
+-- Política restritiva: leitura/alteração de chunks exige interseção de ACL com os principais,
+-- ou o escopo de sistema (encaixe.acl_bypass='on', só ingestão/manutenção; o app_id continua valendo).
 -- A inserção (ingestão) só exige o app, para o worker poder gravar chunks restritos.
 CREATE POLICY acl_visibility ON chunks AS RESTRICTIVE FOR SELECT
-    USING (acl_principals && string_to_array(current_setting('encaixe.principals', true), ','));
+    USING (acl_principals && string_to_array(current_setting('encaixe.principals', true), ',')
+           OR current_setting('encaixe.acl_bypass', true) = 'on');
 CREATE POLICY acl_visibility_upd ON chunks AS RESTRICTIVE FOR UPDATE
-    USING (acl_principals && string_to_array(current_setting('encaixe.principals', true), ','));
+    USING (acl_principals && string_to_array(current_setting('encaixe.principals', true), ',')
+           OR current_setting('encaixe.acl_bypass', true) = 'on');
 CREATE POLICY acl_visibility_del ON chunks AS RESTRICTIVE FOR DELETE
-    USING (acl_principals && string_to_array(current_setting('encaixe.principals', true), ','));
+    USING (acl_principals && string_to_array(current_setting('encaixe.principals', true), ',')
+           OR current_setting('encaixe.acl_bypass', true) = 'on');
 
 -- Privilégios do role da aplicação (tabelas pertencem ao postgres).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO encaixe_app;

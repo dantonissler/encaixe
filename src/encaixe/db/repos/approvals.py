@@ -81,9 +81,14 @@ class PgApprovalStore:
 
     async def resolve(
         self, app_id: str, approval_id: str, status: Literal["approved", "cancelled"]
-    ) -> None:
+    ) -> bool:
+        """Resolve só aprovações pendentes e não expiradas; True se alguma linha mudou."""
         with traced("db.approvals.resolve"):
             async with app_scope(self._pool, app_id, None) as conn:
-                await conn.execute(
-                    "UPDATE tool_approvals SET status = $2 WHERE id = $1", approval_id, status
+                row = await conn.fetchval(
+                    "UPDATE tool_approvals SET status = $2 WHERE id = $1 "
+                    "AND status = 'pending' AND expires_at > now() RETURNING 1",
+                    approval_id,
+                    status,
                 )
+            return row is not None

@@ -41,3 +41,11 @@ async def test_summary_roundtrip(pg_pool):
     await store.save_summary("a", cid, "resumo 1", 4)
     await store.save_summary("a", cid, "resumo 2", 8)
     assert await store.get_summary("a", cid) == ("resumo 2", 8)
+
+
+async def test_other_app_cannot_save_summary(pg_pool):
+    store = PgHistoryStore(pg_pool)
+    cid = await store.create_conversation("a", "u")
+    with pytest.raises(ConversationNotFound):
+        await store.save_summary("b", cid, "x", 1)
+    assert await store.get_summary("a", cid) is None

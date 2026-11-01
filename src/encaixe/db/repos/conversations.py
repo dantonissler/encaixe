@@ -107,13 +107,16 @@ class PgHistoryStore:
     ) -> None:
         with traced("db.history.save_summary"):
             async with app_scope(self._pool, app_id, None) as conn:
-                await conn.execute(
+                row = await conn.fetchval(
                     "INSERT INTO conversation_summaries "
-                    "(conversation_id, app_id, summary, covers_until_seq) VALUES ($1, $2, $3, $4) "
+                    "(conversation_id, app_id, summary, covers_until_seq) "
+                    "SELECT id, app_id, $2, $3 FROM conversations WHERE id = $1 "
                     "ON CONFLICT (conversation_id) DO UPDATE "
-                    "SET summary = EXCLUDED.summary, covers_until_seq = EXCLUDED.covers_until_seq",
+                    "SET summary = EXCLUDED.summary, covers_until_seq = EXCLUDED.covers_until_seq "
+                    "RETURNING 1",
                     conversation_id,
-                    app_id,
                     summary,
                     covers_until_seq,
                 )
+                if row is None:
+                    raise ConversationNotFound(conversation_id)

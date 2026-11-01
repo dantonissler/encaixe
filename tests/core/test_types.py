@@ -7,3 +7,11 @@ def test_principals_as_list_and_fingerprint():
     a = Principals("u1", ("rh", "ti")).fingerprint()
     b = Principals("u1", ("ti", "rh")).fingerprint()
     assert a == b and len(a) == 16
+
+
+def test_principals_reject_commas_and_empty():
+    import pytest
+
+    for args in (("x,group:rh",), (None, ("a,group:rh",)), ("",), (None, ("",))):
+        with pytest.raises(ValueError):
+            Principals(*args)
