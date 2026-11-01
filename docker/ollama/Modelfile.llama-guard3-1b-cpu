@@ -1,0 +1,3 @@
+FROM llama-guard3:1b
+PARAMETER num_gpu 0
+PARAMETER num_ctx 8192

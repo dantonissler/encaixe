@@ -1,0 +1,74 @@
+[project]
+name = "encaixe"
+version = "0.1.0"
+description = "Plataforma local de agentes de IA"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic-ai-slim[openai,mcp]>=2.64",
+    "fastmcp>=4.1",
+    "mcp>=2.3",
+    "redis>=8.1",
+    "arq>=0.28",
+    "docling>=2.145",
+    "asyncpg>=0.32",
+    "pgvector>=0.5.1",
+    "toon-format>=1.2",
+    "openinference-instrumentation-pydantic-ai>=0.1.32",
+    "opentelemetry-sdk>=1.45",
+    "opentelemetry-exporter-otlp-proto-http>=1.45",
+    "opentelemetry-instrumentation-fastapi>=0.66b2",
+    "sentence-transformers>=6.2",
+    "transformers>=5.22",
+    "torch",
+    "fastapi>=0.162",
+    "uvicorn[standard]",
+    "python-multipart",
+    "structlog>=26.1",
+    "pydantic-settings>=2.16",
+    "jinja2>=3.1.6",
+    "httpx>=0.28",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio>=1.4",
+    "fakeredis>=2.40",
+    "respx>=0.23",
+    "ruff",
+]
+
+[project.scripts]
+encaixe = "encaixe.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/encaixe"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-m 'not integration'"
+markers = ["integration: precisa de Postgres/Redis/Ollama reais"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.uv]
+# arq limita redis<6; o piso do projeto é redis>=8.1 (verificado com o teste de integração do worker)
+override-dependencies = ["redis>=8.1"]
