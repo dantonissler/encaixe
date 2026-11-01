@@ -64,9 +64,15 @@ services:
     environment:
       PHOENIX_SQL_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres_dev}@postgres:5432/phoenix
       PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_ENABLE_AUTH: "false"
       DO_NOT_TRACK: "1"
     ports:
       - "6006:6006"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6006/healthz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   mcp-tarefas:
     profiles: ["tools"]

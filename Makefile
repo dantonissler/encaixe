@@ -13,10 +13,10 @@ migrate:
 	uv run python -m encaixe.db.migrate
 
 api:
-	uv run uvicorn encaixe.api.app:create_app --factory --port 8100
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 uv run uvicorn encaixe.api.app:create_app --factory --port 8100
 
 worker:
-	uv run arq encaixe.workers.settings.WorkerSettings
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 uv run arq encaixe.workers.settings.WorkerSettings
 
 test:
 	uv run pytest
