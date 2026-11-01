@@ -160,3 +160,14 @@ async def test_upsert_rejects_wrong_dims(pg_pool):
     c.embedding = [0.1, 0.2]
     with pytest.raises(ValueError, match="1024"):
         await store.upsert([c])
+
+
+async def test_delete_chunks_keeps_document(pg_pool):
+    store = PgVectorStore(pg_pool)
+    doc = await make_doc(pg_pool, "appdc")
+    await store.upsert([mk("appdc", doc, "um", 1), mk("appdc", doc, "dois", 2)])
+    assert await store.delete_chunks("appdc", doc) == 2
+    assert await store.delete_chunks("appdc", doc) == 0
+    async with app_scope(pg_pool, "appdc", None, system=True) as conn:
+        assert await conn.fetchval("SELECT count(*) FROM chunks WHERE document_id=$1::uuid", doc) == 0
+        assert await conn.fetchval("SELECT count(*) FROM documents WHERE id=$1::uuid", doc) == 1

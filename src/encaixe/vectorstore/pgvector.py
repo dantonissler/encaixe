@@ -134,3 +134,14 @@ class PgVectorStore:
                     app_id,
                     document_id,
                 )
+
+    async def delete_chunks(self, app_id: str, document_id: str) -> int:
+        """Remove só os chunks do documento (a linha em documents permanece); devolve quantos."""
+        with traced("vectorstore.delete_chunks"):
+            async with app_scope(self._pool, app_id, None, system=True) as conn:
+                tag = await conn.execute(
+                    "DELETE FROM chunks WHERE app_id = $1 AND document_id = $2::uuid",
+                    app_id,
+                    document_id,
+                )
+        return int(tag.rsplit(" ", 1)[-1])
