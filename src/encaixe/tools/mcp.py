@@ -1,36 +1,30 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import Any
 
+import structlog
 from pydantic_ai import RunContext
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, WrapperToolset
 
-from encaixe.context.untrusted import wrap_untrusted
 from encaixe.core.config import LoadedApp, McpServerConfig
 from encaixe.core.types import RequestContext
 from encaixe.messages import APPROVAL_PROMPT
 from encaixe.observability.spans import traced
 from encaixe.tools.approvals import identity_headers
 from encaixe.tools.native import AgentDeps
+from encaixe.tools.results import UNAVAILABLE, sanitize_tool_result
 
-BLOCKED = "[resultado bloqueado por segurança]"
-
+log = structlog.get_logger(__name__)
 
 def _describe(tool: str, args: dict) -> str:
-    return f"{tool}({', '.join(f'{k}={v}' for k, v in args.items())})"
+    def short(v: Any) -> str:
+        r = repr(v)
+        return r if len(r) <= 80 else r[:77] + "..."
 
-
-def _stringify(result: Any) -> str:
-    if isinstance(result, str):
-        return result
-    try:
-        return json.dumps(result, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return str(result)
+    return f"{tool}({', '.join(f'{k}={short(v)}' for k, v in args.items())})"
 
 
 class McpGuardToolset(WrapperToolset[AgentDeps]):
@@ -46,14 +40,18 @@ class McpGuardToolset(WrapperToolset[AgentDeps]):
         if name in self.require_approval:
             with traced("tool.mcp.approval_request", tool=name):
                 await deps.approvals.request(deps.ctx, self.server, name, tool_args)
-            deps.ctx.tools_called.append(name)
+            deps.ctx.tools_called.append(f"{name}:pendente")
             return APPROVAL_PROMPT.format(acao=_describe(name, tool_args))
-        with traced("tool.mcp.call", tool=name, server=self.server):
-            result = _stringify(await super().call_tool(name, tool_args, ctx, tool))
+        with traced("tool.mcp.call", tool=name, server=self.server) as span:
+            try:
+                result = await super().call_tool(name, tool_args, ctx, tool)
+            except Exception as exc:  # noqa: BLE001 (CancelledError não é Exception)
+                log.warning("mcp_tool_unavailable", tool=name, server=self.server, error=type(exc).__name__)
+                if span is not None:
+                    span.set_attribute("tool.unavailable", True)
+                return UNAVAILABLE
         deps.ctx.tools_called.append(name)
-        if (await deps.injection.check_text(result)).verdict == "block":
-            return BLOCKED
-        return wrap_untrusted("ferramenta", {"ferramenta": name, "resultado": result}, deps.boundary)
+        return await sanitize_tool_result(deps.injection, name, result, deps.boundary)
 
 
 def build_mcp_toolsets(

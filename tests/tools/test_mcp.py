@@ -115,7 +115,7 @@ async def test_write_tool_replaced_by_approval_request():
     assert repo.rows[0]["args"] == {"titulo": "X"} and repo.rows[0]["tool"] == "criar_tarefa"
     assert repo.rows[0]["server"] == "tarefas" and repo.rows[0]["user_ref"] == "u1"
     out = returns(res)[0]
-    assert "confirmação" in out and "criar_tarefa(titulo=X)" in out
+    assert "confirmação" in out and "criar_tarefa(titulo='X')" in out
 
 
 async def test_read_tool_wrapped_and_recorded():
@@ -133,3 +133,27 @@ async def test_tool_result_injection_blocked():
     agent = Agent(calling_model("listar_tarefas", {}), toolsets=build(ctx, make_server([])), deps_type=AgentDeps)
     res = await agent.run("x", deps=mk_deps(ctx, injection=FakeInjection(block_on="tarefa a")))
     assert returns(res) == ["[resultado bloqueado por segurança]"]
+
+
+async def test_server_down_returns_unavailable_and_run_completes():
+    ctx = make_ctx()
+    server = make_server([])
+
+    @server.tool
+    def quebrada() -> str:
+        """Falha."""
+        raise ConnectionError("down")
+
+    ctx = make_ctx(allow=["quebrada"], require_approval=[])
+    agent = Agent(calling_model("quebrada", {}), toolsets=build(ctx, server), deps_type=AgentDeps)
+    res = await agent.run("x", deps=mk_deps(ctx))
+    assert res.output == "fim"
+    assert returns(res) == ["[ferramenta indisponível no momento]"] or "indisponível" in str(returns(res))
+    assert ctx.tools_called == []
+
+
+async def test_approval_request_marked_pending_not_executed():
+    ctx = make_ctx()
+    agent = Agent(calling_model("criar_tarefa", {"titulo": "X"}), toolsets=build(ctx, make_server([])), deps_type=AgentDeps)
+    await agent.run("x", deps=mk_deps(ctx))
+    assert ctx.tools_called == ["criar_tarefa:pendente"]
