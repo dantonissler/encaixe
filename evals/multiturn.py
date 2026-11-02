@@ -1,8 +1,10 @@
 """Casos de escrita (2 turnos) e preparo das tarefas dos casos de leitura.
 
 O promptfoo não encadeia turnos, e a ferramenta de escrita (`criar_tarefa`) só é oferecida com
-um `X-Conversation-Id` de um turno anterior. Cada caso aqui:
-  1. pede a criação da tarefa -> a resposta precisa pedir confirmação ("confirma...");
+um `X-Conversation-Id` de um turno anterior (spec §7: sem id, nada de escrita). Cada caso aqui:
+  0. abre a conversa (`OPENING`) para receber o `X-Conversation-Id`;
+  1. pede a criação da tarefa nessa conversa -> a resposta precisa pedir confirmação
+     ("confirma...");
   2. responde "sim" na mesma conversa -> a resposta diz que criou, e `listar_tarefas` (direto
      no adaptador MCP) mostra a tarefa.
 O resultado entra em `evals/results/<app>.json` na seção `extra.multiturn`, que o
@@ -34,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = ROOT / "evals" / "results"
 READER = "eval-leitor"
 READER_TASKS = ["Enviar relatório mensal", "Renovar crachá"]
+OPENING = "Olá! Preciso de ajuda com minhas tarefas."
 
 
 def make_cases(run_id: str) -> list[dict[str, str]]:
@@ -145,9 +148,10 @@ async def run_cases(run_id: str) -> dict[str, Any]:
             failures: list[str] = []
             try:
                 before = await _mcp(case["user"], "listar_tarefas")
-                ask, cid = await _chat(client, case["user"], case["prompt"])
+                _, cid = await _chat(client, case["user"], OPENING)
                 if not cid:
                     raise RuntimeError("a API não devolveu X-Conversation-Id")
+                ask, _ = await _chat(client, case["user"], case["prompt"], cid)
                 answer, _ = await _chat(client, case["user"], "sim", cid)
                 after = await _mcp(case["user"], "listar_tarefas")
                 failures = check_turns(ask, answer, before, after, case["needle"])

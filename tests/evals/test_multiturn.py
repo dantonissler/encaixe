@@ -40,3 +40,28 @@ def test_merge_extra_refuses_to_create_the_file(tmp_path):
 def test_main_fails_without_promptfoo_results(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCAIXE_EVAL_API_KEY", "k")
     assert multiturn.main(["--results", str(tmp_path / "x.json")]) == 1
+
+
+async def test_write_turns_carry_the_conversation_id(monkeypatch):
+    """Sem X-Conversation-Id não há ferramenta de escrita (spec §7): o pedido de criação e o
+    "sim" precisam ir numa conversa já aberta."""
+    calls: list[tuple[str, str | None]] = []
+    created: set[str] = set()
+
+    async def fake_chat(client, user, text, conversation_id=None):
+        calls.append((text, conversation_id))
+        if text == "sim" and conversation_id:
+            created.add(user)
+            return "Criei a tarefa.", conversation_id
+        return "Você confirma a criação?", conversation_id or "cid-1"
+
+    async def fake_mcp(user, tool, args=None):
+        needle = next(c["needle"] for c in multiturn.make_cases("abc123") if c["user"] == user)
+        return json.dumps([{"titulo": needle}] if user in created else [])
+
+    monkeypatch.setattr(multiturn, "_chat", fake_chat)
+    monkeypatch.setattr(multiturn, "_mcp", fake_mcp)
+    summary = await multiturn.run_cases("abc123")
+    assert summary["passed"] == summary["total"] == 2
+    prompts = {c["prompt"] for c in multiturn.make_cases("abc123")}
+    assert all(cid == "cid-1" for text, cid in calls if text in prompts or text == "sim")
