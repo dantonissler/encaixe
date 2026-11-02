@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 
 import pytest
 
@@ -162,3 +163,40 @@ async def test_enqueue_failure_rolls_back(api, tmp_path):
         r = await upload(c)
     assert r.status_code == 503
     assert api.docs.rows == {} and stored_files(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "name,suffix",
+    [
+        ("文" * 200 + ".md", ".md"),  # 3 bytes por caractere
+        ("é" * 300 + ".pdf", ".pdf"),
+        ("a" * 400, ""),
+        ("文" * 50 + "." + "x" * 300, ""),  # "extensão" absurda não é preservada
+    ],
+)
+def test_safe_filename_fits_255_bytes_with_uuid_prefix(name, suffix):
+    out = documents_route.safe_filename(name)
+    assert len(f"{uuid.uuid4().hex}-{out}".encode()) <= 255
+    assert out.endswith(suffix) and len(out) > len(suffix)
+    assert out.encode().decode() == out  # nenhum caractere cortado ao meio
+
+
+async def test_long_cjk_filename_upload_is_stored(api, tmp_path):
+    async with api.client() as c:
+        r = await upload(c, name="政策" * 100 + ".md")
+    assert r.status_code == 202
+    (stored,) = stored_files(tmp_path)
+    assert len(stored.name.encode()) <= 255 and stored.name.endswith(".md")
+    assert stored.read_bytes() == DATA
+
+
+@pytest.mark.parametrize(
+    "acl",
+    ["user: ana", "group:r h", "user:ana\tbia", "user:ana\x00", "group:r\x1fh", "user:ana\x7f"],
+)
+async def test_acl_with_whitespace_or_control_chars_is_400(api, acl):
+    async with api.client() as c:
+        r = await upload(c, acl=acl)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_acl"
+    assert api.docs.rows == {}

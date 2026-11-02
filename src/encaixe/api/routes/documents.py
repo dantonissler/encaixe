@@ -32,8 +32,12 @@ router = APIRouter()
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 FORM_OVERHEAD = 64 * 1024  # cabeçalhos multipart e campos além do arquivo
 # Principais aceitos na ACL (spec §6.4a); vírgula separa os itens e nunca faz parte de um.
-ACL_ITEM = re.compile(r"app:\*|(user|group):[^,]+")
+# Espaço e caracteres de controle também não: "user: ana" nunca casaria com o principal.
+ACL_ITEM = re.compile(r"app:\*|(user|group):[^,\s\x00-\x1f\x7f-\x9f]+")
 _UNSAFE = re.compile(r"[^\w.\- ]")
+# O arquivo é `<uuid hex>-<nome>`; nomes de arquivo têm no máximo 255 bytes (ext4 etc.).
+MAX_FILENAME_BYTES = 255 - len(uuid.uuid4().hex) - 1
+MAX_SUFFIX_BYTES = 16
 
 
 class DocumentRepo(Protocol):
@@ -81,12 +85,23 @@ KeyApp = Annotated[str, Depends(require_app)]
 AppDeps = Annotated[Deps, Depends(get_deps)]
 
 
+def _fit_bytes(text: str, limit: int) -> str:
+    """Prefixo de `text` com no máximo `limit` bytes em UTF-8, sem partir caractere."""
+    return text.encode()[: max(limit, 0)].decode("utf-8", "ignore")
+
+
 def safe_filename(name: str | None) -> str:
     """Só o nome-base, sem diretórios (`/` ou `\\`), sem ponto inicial e só com caracteres
-    seguros; o que sobrar vazio vira `documento`."""
+    seguros; o que sobrar vazio vira `documento`. Cabe em `MAX_FILENAME_BYTES` bytes (UTF-8),
+    cortando o nome e mantendo a extensão (o Docling escolhe o formato por ela)."""
     base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
     base = _UNSAFE.sub("_", unicodedata.normalize("NFC", base)).strip(" .")
-    return base[:150] or "documento"
+    if len(base.encode()) > MAX_FILENAME_BYTES:
+        stem, dot, ext = base.rpartition(".")
+        suffix = f".{ext}" if dot and stem and len(ext.encode()) < MAX_SUFFIX_BYTES else ""
+        stem = base[: len(base) - len(suffix)]
+        base = _fit_bytes(stem, MAX_FILENAME_BYTES - len(suffix.encode())).rstrip(" .") + suffix
+    return base or "documento"
 
 
 def parse_acl(raw: str | None) -> list[str]:
