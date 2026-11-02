@@ -42,9 +42,21 @@ ChainFactory = Callable[[str, list[str]], tuple[Model, list[str]]]
 McpSource = Callable[[McpServerConfig, dict[str, str]], Any]
 
 
+RUNTIME_ENV = (
+    "HF_HUB_DISABLE_TELEMETRY",
+    "DO_NOT_TRACK",
+    "PYDANTIC_AI_NO_BANNER",
+    # 100% local em execução, mesmo com uvicorn/arq iniciados sem o Makefile: nada é baixado
+    # (os modelos vêm do `make models`). Precisa rodar antes de importar huggingface_hub.
+    "HF_HUB_OFFLINE",
+    "TRANSFORMERS_OFFLINE",
+)
+
+
 def set_runtime_env() -> None:
-    """Sem telemetria de terceiros e sem o banner do Pydantic AI (sem sobrescrever o ambiente)."""
-    for name in ("HF_HUB_DISABLE_TELEMETRY", "DO_NOT_TRACK", "PYDANTIC_AI_NO_BANNER"):
+    """Sem telemetria de terceiros, sem downloads e sem o banner do Pydantic AI (sem
+    sobrescrever o que o ambiente já definiu)."""
+    for name in RUNTIME_ENV:
         os.environ.setdefault(name, "1")
 
 

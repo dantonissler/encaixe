@@ -21,13 +21,26 @@ WORKER_KEYS = {
 
 
 def test_runtime_env_defaults(monkeypatch):
-    for name in ("HF_HUB_DISABLE_TELEMETRY", "DO_NOT_TRACK", "PYDANTIC_AI_NO_BANNER"):
+    for name in wiring.RUNTIME_ENV:  # restaurados no fim do teste
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DO_NOT_TRACK", "0")  # setdefault: não sobrescreve escolha explícita
     wiring.set_runtime_env()
     assert os.environ["HF_HUB_DISABLE_TELEMETRY"] == "1"
     assert os.environ["PYDANTIC_AI_NO_BANNER"] == "1"
     assert os.environ["DO_NOT_TRACK"] == "0"
+
+
+def test_runtime_env_is_offline_by_default(monkeypatch):
+    """Revisão final m6: 100% local em execução também quando uvicorn/arq são iniciados
+    direto (sem o Makefile). setdefault: quem baixa modelos de propósito pode passar 0."""
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.delenv(name, raising=False)
+    wiring.set_runtime_env()
+    assert os.environ["HF_HUB_OFFLINE"] == "1"
+    assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    wiring.set_runtime_env()
+    assert os.environ["HF_HUB_OFFLINE"] == "0"
 
 
 def test_canaries_generated_once_per_app():
