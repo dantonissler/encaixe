@@ -55,7 +55,9 @@ async def buscar_documentos(ctx: RunContext[AgentDeps], consulta: str) -> str:
     return wrap_untrusted("trechos", payload, deps.boundary)
 
 
-_NATIVE: dict[str, Callable[..., Any]] = {"buscar_documentos": buscar_documentos}
+# Só lê o corpus: o resultado depende da versão do corpus e dos principais, como a pré-busca.
+SEARCH_TOOL = "buscar_documentos"
+_NATIVE: dict[str, Callable[..., Any]] = {SEARCH_TOOL: buscar_documentos}
 
 
 def build_native_toolset(names: list[str]) -> FunctionToolset[AgentDeps]:

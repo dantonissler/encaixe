@@ -62,3 +62,14 @@ def test_not_cacheable_when_tool_called_or_pii():
     assert is_cacheable(
         _Ctx(guard_results=[GuardResult("pii", "pass")]), [GuardResult("g", "flag")]
     )
+
+
+def test_document_search_tool_does_not_prevent_caching():
+    """Com a saída por ferramenta o modelo passou a chamar buscar_documentos em ~metade dos
+    turnos de documentos. Ela só lê o corpus (a chave já leva a versão do corpus e os
+    principais), então a resposta continua cacheável; ferramentas MCP (dados por usuário
+    que mudam) continuam fora."""
+    assert is_cacheable(_Ctx(tools_called=["buscar_documentos"]), [])
+    assert is_cacheable(_Ctx(tools_called=["buscar_documentos", "buscar_documentos"]), [])
+    assert not is_cacheable(_Ctx(tools_called=["buscar_documentos", "listar_tarefas"]), [])
+    assert not is_cacheable(_Ctx(tools_called=["criar_tarefa:pendente"]), [])

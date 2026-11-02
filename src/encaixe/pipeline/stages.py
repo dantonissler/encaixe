@@ -29,7 +29,7 @@ from encaixe.output.schemas import RespostaBase
 from encaixe.pipeline.events import ChatEvent, Retraction, TextDelta
 from encaixe.settings import Settings
 from encaixe.tools.mcp import build_mcp_toolsets
-from encaixe.tools.native import AgentDeps, build_native_toolset
+from encaixe.tools.native import SEARCH_TOOL, AgentDeps, build_native_toolset
 
 log = structlog.get_logger(__name__)
 
@@ -37,7 +37,7 @@ log = structlog.get_logger(__name__)
 SENTENCE_END = re.compile(r"[.!?…]\s|\n")
 # Checagens rápidas (regex) aplicadas antes de liberar cada frase no modo buffered_sentences.
 QUICK_GUARDS = ("pii_leak", "canary")
-RAG_TOOL = "buscar_documentos"
+RAG_TOOL = SEARCH_TOOL
 
 
 def span_attr(key: str, value: str | bool | int) -> None:

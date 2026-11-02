@@ -410,7 +410,8 @@ async def test_tool_call_emits_status_and_registers_retrieval():
     assert ctx.tools_called == ["buscar_documentos"]
     assert [s.chunk.id for s in ctx.retrieved] == ["k1"]
     assert final_of(events).output.resposta == "São 30 dias."  # não vira NOT_FOUND
-    assert h.cache.sets == []  # chamou ferramenta: sem cache
+    # só a busca nos documentos: continua cacheável (a chave leva corpus e principais)
+    assert len(h.cache.sets) == 1
 
 
 async def test_loop_detected_returns_limit_message():

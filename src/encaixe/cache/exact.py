@@ -8,6 +8,7 @@ import json
 from encaixe.core.types import ChatMessage, GuardResult, Principals, RequestContext
 from encaixe.observability.spans import traced
 from encaixe.output.schemas import RespostaBase
+from encaixe.tools.native import SEARCH_TOOL
 
 
 def _normalize(text: str) -> str:
@@ -57,7 +58,9 @@ class ExactCache:
 def is_cacheable(ctx: RequestContext, output_verdicts: list[GuardResult]) -> bool:
     if not ctx.app.config.cache.exact.enabled:
         return False
-    if ctx.tools_called or ctx.extra_context:
+    # Busca nos documentos não impede: a chave já leva a versão do corpus e os principais.
+    # Ferramenta MCP (dado por usuário que muda) e ação aprovada impedem.
+    if ctx.extra_context or any(t != SEARCH_TOOL for t in ctx.tools_called):
         return False
     for r in ctx.guard_results:
         if r.verdict == "block" or (r.guard == "pii" and r.verdict == "flag"):
