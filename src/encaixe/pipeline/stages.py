@@ -185,6 +185,7 @@ class Turn:
     cache_key: str | None = None
     output: RespostaBase | None = None
     synthetic: bool = False  # resposta fixa: sem guards de saída e sem cache
+    rag_unavailable: bool = False  # a pré-busca falhou: "sem base" vira RAG_UNAVAILABLE
     model_name: str | None = None
     output_results: list[GuardResult] = field(default_factory=list)
 

@@ -1,5 +1,7 @@
 REFUSAL_INPUT = "Não posso ajudar com esse pedido."
 NOT_FOUND = "Não encontrei essa informação nos documentos disponíveis."
+# RAG fora do ar (spec §6.11.5): diferente de NOT_FOUND, os documentos nem foram consultados.
+RAG_UNAVAILABLE = "Não consegui consultar os documentos agora. Tente de novo em instantes."
 ALL_FAILED = "Desculpe, não consegui responder agora. Tente novamente em instantes."
 LIMIT_REACHED = "Não consegui concluir a tarefa dentro do limite de passos."
 QUEUE_WAIT = "Aguardando na fila…"

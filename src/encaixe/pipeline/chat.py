@@ -19,7 +19,14 @@ from encaixe.core.pii import mask_pii
 from encaixe.core.types import ChatMessage, RequestContext
 from encaixe.guardrails.canary import make_canary
 from encaixe.guardrails.runner import blocked, run_guards, run_output_guards
-from encaixe.messages import ALL_FAILED, GUARD_UNAVAILABLE, NOT_FOUND, REFUSAL_INPUT, RETRACTION
+from encaixe.messages import (
+    ALL_FAILED,
+    GUARD_UNAVAILABLE,
+    NOT_FOUND,
+    RAG_UNAVAILABLE,
+    REFUSAL_INPUT,
+    RETRACTION,
+)
 from encaixe.observability.spans import current_ctx, set_current_ctx, traced
 from encaixe.output.schemas import RespostaBase
 from encaixe.pipeline.events import ChatEvent, Final, Retraction, Status, TextDelta
@@ -93,7 +100,7 @@ class ChatPipeline:
             if cached.resposta:
                 yield TextDelta(cached.resposta)
         else:
-            await self._retrieve(ctx)
+            await self._retrieve(ctx, turn)
             built = self._build_context(ctx, turn)
             # aclosing: se o cliente sair, o agente é cancelado agora, não na coleta de lixo.
             async with aclosing(self._agent(ctx, built, turn)) as agent_events:
@@ -205,7 +212,7 @@ class ChatPipeline:
     # --- 4. retrieval -----------------------------------------------------------------------
 
     @traced("pipeline.retrieve")
-    async def _retrieve(self, ctx: RequestContext) -> None:
+    async def _retrieve(self, ctx: RequestContext, turn: Turn) -> None:
         rag = ctx.app.config.rag
         if not rag.enabled:
             return
@@ -213,10 +220,10 @@ class ChatPipeline:
             ctx.retrieved = await self.deps.retriever.retrieve(
                 ctx.app.config.id, ctx.principals, ctx.user_message, rag.top_k, rag.rerank_top_n
             )
-        except Exception as exc:  # noqa: BLE001 - RAG fora: segue sem trechos (vira NOT_FOUND)
+        except Exception as exc:  # noqa: BLE001 - RAG fora: segue sem trechos (RAG_UNAVAILABLE)
             log.warning("retrieval_failed", error=type(exc).__name__)
             span_attr("rag.error", type(exc).__name__)
-            ctx.retrieved = []
+            ctx.retrieved, turn.rag_unavailable = [], True
         span_attr("rag.retrieved", len(ctx.retrieved))
 
     # --- 5. contexto ------------------------------------------------------------------------
@@ -317,7 +324,9 @@ class ChatPipeline:
             self._resolve_citations(ctx, turn)
             if (reason := not_found_reason(ctx, turn.output)) is not None:
                 span_attr("not_found", reason)
-                turn.finish_static(NOT_FOUND)
+                # Sem trecho porque o RAG caiu: avisar que não consultou (spec §6.11.5).
+                unavailable = turn.rag_unavailable and reason == "no_retrieval"
+                turn.finish_static(RAG_UNAVAILABLE if unavailable else NOT_FOUND)
         retract = False
         if not turn.synthetic:
             g = ctx.app.config.guardrails

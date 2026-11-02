@@ -19,6 +19,7 @@ from encaixe.messages import (
     GUARD_UNAVAILABLE,
     LIMIT_REACHED,
     NOT_FOUND,
+    RAG_UNAVAILABLE,
     REFUSAL_INPUT,
     RETRACTION,
 )
@@ -299,11 +300,18 @@ async def test_empty_retrieval_yields_not_found(cites):
     assert h.cache.sets == []
 
 
-async def test_retrieval_failure_degrades_to_not_found():
+async def test_retrieval_failure_says_documents_could_not_be_consulted():
+    """Revisão final M-T13a (spec §6.11.5): RAG fora do ar não é "não encontrei"; a resposta
+    avisa que os documentos não puderam ser consultados e não vai para o cache."""
     app = make_app()
-    h = make_harness(app, Script(answer("Algo.", [])), retriever=FakeRetriever(fail=True))
+    h = make_harness(
+        app, Script(answer("Inventei algo.", ["k1"])), retriever=FakeRetriever(fail=True)
+    )
     events = await collect(ChatPipeline(h.deps), make_ctx(app))
-    assert final_of(events).output.resposta == NOT_FOUND
+    assert text_of(events) == RAG_UNAVAILABLE
+    out = final_of(events).output
+    assert out.resposta == RAG_UNAVAILABLE and out.citacoes == []
+    assert h.cache.sets == []
 
 
 async def test_canary_identical_across_requests_of_same_app():
