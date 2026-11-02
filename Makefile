@@ -12,11 +12,14 @@ models:
 migrate:
 	uv run python -m encaixe.db.migrate
 
+# Em execução nada é baixado nem reportado (modelos HF vêm do `make models`).
+OFFLINE = HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1
+
 api:
-	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 uv run uvicorn encaixe.api.app:create_app --factory --port 8100
+	$(OFFLINE) uv run uvicorn encaixe.api.app:create_app --factory --port 8100
 
 worker:
-	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 uv run arq encaixe.workers.settings.WorkerSettings
+	$(OFFLINE) uv run arq encaixe.workers.settings.WorkerSettings
 
 test:
 	uv run pytest
@@ -38,7 +41,7 @@ eval:
 	uv run python evals/multiturn.py --app $(APP) --seed-only
 	-$(PROMPTFOO) eval -c apps/$(APP)/evals/promptfooconfig.yaml -o evals/results/$(APP).json
 	uv run python evals/multiturn.py --app $(APP)
-	uv run python evals/retrieval.py --app $(APP)
+	$(OFFLINE) uv run python evals/retrieval.py --app $(APP)
 	uv run python evals/compare_baseline.py --app $(APP)
 
 bakeoff:
