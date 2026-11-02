@@ -84,9 +84,14 @@ Traces: abra http://localhost:6006 (projeto `default`). Cada requisição gera a
 
 ### Open WebUI (opcional)
 
+Com a API de pé (`make api`):
+
 ```bash
 ENCAIXE_WEBUI_API_KEY=enc_... docker compose --profile ui up -d open-webui   # http://localhost:38080
+docker compose --profile ui stop open-webui                                   # ao terminar (RAM)
 ```
+
+Ele roda na rede do host (`network_mode: host`): escuta em `127.0.0.1:38080` e fala com a API em `127.0.0.1:8100`, sem publicar porta e sem precisar expor a API. A primeira conta criada na tela de cadastro vira a de administrador do Open WebUI. Medido: ~2 min até ficar saudável na primeira partida (ele baixa do Hugging Face o modelo de embeddings do RAG próprio, `all-MiniLM-L6-v2`, que o encaixe não usa) e ~1 GiB de RAM.
 
 O Open WebUI não manda identidade de usuário nem id de conversa. Ele roda no modo sem identidade: vê só documentos `app:*`, recebe o histórico do próprio cliente como bloco de dados não confiável (checado pelos guards de entrada) e nunca ganha ferramentas de escrita; cada mensagem cria uma conversa nova no banco. Serve para testes internos.
 
@@ -96,6 +101,12 @@ Por padrão nada sai da máquina. Para os backends das aplicações chamarem a A
 
 ```bash
 make api API_HOST=0.0.0.0    # a API passa a escutar em todas as interfaces, porta 8100
+```
+
+Para abrir o Open WebUI para a rede local (ele tem login próprio):
+
+```bash
+OPEN_WEBUI_HOST=0.0.0.0 ENCAIXE_WEBUI_API_KEY=enc_... docker compose --profile ui up -d open-webui
 ```
 
 Faça isso só numa rede confiável: a API exige a chave, mas o tráfego vai sem TLS (o Caddy com TLS do spec fica fora do MVP; ver desvios). A infraestrutura continua no loopback.

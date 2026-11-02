@@ -269,3 +269,31 @@ Quente: 49,5 s (meta de 20 s). Frio: `ALL_FAILED` após 156 s. Com 14 GiB compar
 - O caso "Preciso usar VPN no home office?" reprovava a resposta correta "Sim, de acordo com a política da empresa". A asserção passou a aceitar "sim" ou "VPN" como palavra inteira.
 - `make eval` rodava o `retrieval.py` sem o modo offline e consultava o Hugging Face Hub; agora usa as mesmas variáveis offline da API.
 - O prompt da app `exemplo` passou a orientar o uso das ferramentas de tarefas. Sem efeito enquanto o D1 estiver aberto, mas evita a resposta "Aqui estão as suas tarefas…" sem tarefas.
+
+## Revisão final antes do merge
+
+Correções da revisão final do ramo inteiro, com o comportamento que mudou:
+
+- **Exposição:** toda porta do Compose escuta só em `127.0.0.1` (Postgres, Redis, Ollama, Phoenix, adaptador MCP e Open WebUI). `make api` escuta no loopback; `API_HOST=0.0.0.0` expõe a API. Conferido com `ss -ltn` depois de recriar a stack.
+- **Open WebUI:** roda na rede do host, escuta em `127.0.0.1:38080` e alcança a API em `127.0.0.1:8100` (antes, com a API no loopback, o container na rede bridge não a alcançava; o perfil nunca tinha sido testado). Testado ao vivo: `/api/models` lista `exemplo`, uma pergunta sem stream e uma com stream e histórico chegam à API com 200 e terminam em `data: [DONE]`. Primeira partida ~2 min (baixa o modelo de embeddings dele do Hugging Face), ~1 GiB de RAM.
+- **Histórico do cliente (sem id de conversa):** entra como um único bloco de dados delimitado (`tipo=historico`), nunca como turnos de chat, e os turnos do usuário passam uma vez pelos guards de entrada (menos `normalize`). Ao vivo: turno anterior com injeção → recusa (`guard.blocked=historico:prompt_injection`); turno anterior nocivo → recusa (`historico:content_safety`); histórico inofensivo → resposta normal com citações.
+- **Resumo da conversa:** vai como mensagem do usuário com rótulo e bloco `tipo=resumo` logo depois do system prompt (antes era mensagem de sistema), e o worker só grava um resumo novo que passe no detector de injeção (`summary_rejected` no log quando não passa). Ao vivo: conversa com resumo gravado respondeu certo ("até 3 períodos…") com citação; no span do modelo, a mensagem 0 é o system prompt e a 1 é o resumo com papel `user`.
+- **Traces:** o exporter manda ao Phoenix só cópias mascaradas dos spans (atributos, eventos e status). Ao vivo: pergunta com um e-mail → o span do modelo mostra `[EMAIL]` e o endereço não aparece em nenhum span do trace.
+- **Cache exato:** a chave usa a versão da app (hash de `system.md`, `app.yaml` e do schema), não só a do prompt; `make eval` começa apagando `enc:resp:*` de todas as apps (`uv run encaixe cache clear`). RAG fora do ar responde "Não consegui consultar os documentos agora…" em vez de `NOT_FOUND`.
+- **Outros:** `make migrate` aplica as migrações (antes não fazia nada) e o `/ready` responde 503 com `postgres:schema` enquanto faltar alguma; headers de identidade vencem o corpo (divergência → 400); resultado de ferramenta MCP cortado em 4.000 caracteres com "[resultado truncado]"; `app.yaml` validado na carga (chave desconhecida, guard inexistente, id repetido, orçamento maior que `num_ctx`: o `system` do `exemplo` caiu de 1.500 para 800 tokens, o prompt tem ~530); `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` por padrão em execução; `evals/retrieval.py` falha se um documento proibido dos casos de ACL não existir ou não estiver `indexed`.
+
+Eval com as correções (`make eval APP=exemplo`, uma rodada, logo depois de recriar a stack):
+
+| Categoria | Casos | Revisão final |
+|-----------|-------|---------------|
+| rag | 15 | 14 |
+| acl | 3 | 3 |
+| injecao_direta | 3 | 3 |
+| injecao_indireta | 2 | 2 |
+| ferramenta_leitura | 3 | 3 |
+| fora_escopo | 2 | 2 |
+| escrita (multi-turno) | 2 | 2 |
+| **Total** | **30** | **29 (96,7%)** |
+| recall@5 / MRR / vazamentos de ACL | | 1,000 / 1,000 / 0 |
+
+Passou no portão contra o baseline (0,967, queda máxima de 7 pontos), igual ao baseline. A única reprovação foi o primeiro caso da rodada ("Quantos dias de férias tenho direito depois de um ano de trabalho?"): `ALL_FAILED` por estouro do prazo de 60 s do agente, com o principal travado sob swap cheio logo depois de recriar os containers e o reserva na CPU entrando. O reserva ficou carregado, tirou o ShieldGemma da memória e os modelos passaram a se revezar: latência média de 18,5 s por caso (15,1 s na rodada "Camadas 2"), o efeito já descrito nas limitações do README. Descarreguei o reserva depois da rodada.
