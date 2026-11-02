@@ -21,3 +21,39 @@ def test_ollama_keeps_every_hot_model_loaded():
     hot = len(plan.chat_models) + len(plan.embed_models)
     assert hot == 4
     assert int(env.get("OLLAMA_MAX_LOADED_MODELS", 3)) >= hot
+
+
+def _published(spec: object) -> tuple[str | None, str]:
+    """(IP do host, resto) de uma entrada de `ports` (forma curta ou longa do Compose)."""
+    if isinstance(spec, dict):
+        return spec.get("host_ip"), str(spec.get("published", ""))
+    parts = str(spec).split(":")
+    if len(parts) == 3:
+        return parts[0], ":".join(parts[1:])
+    return None, ":".join(parts)
+
+
+def test_every_published_port_is_loopback_only():
+    """Revisão final C1: Postgres (superusuário), Redis (sem senha), Ollama, Phoenix (sem
+    login) e o adaptador MCP (confia em X-User-Ref) não podem ficar na rede local. Spec §3:
+    só a API e o Open WebUI ficam expostos, e por escolha do operador (README)."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    published = 0
+    for name, service in compose["services"].items():
+        for spec in service.get("ports", []):
+            host_ip, rest = _published(spec)
+            assert host_ip == "127.0.0.1", f"{name} publica {spec!r} fora do loopback"
+            published += 1
+        if service.get("network_mode") == "host":
+            env = service.get("environment", {})
+            assert env.get("HOST") == "127.0.0.1", f"{name} na rede do host sem HOST=127.0.0.1"
+    assert published >= 5  # postgres, redis, ollama, phoenix, mcp-tarefas
+
+
+def test_make_api_binds_loopback_by_default():
+    """`make api` escuta só no loopback; API_HOST=0.0.0.0 expõe para backends em outras
+    máquinas (README)."""
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "API_HOST ?= 127.0.0.1" in makefile
+    api_recipe = makefile.split("\napi:\n", 1)[1].split("\n\n", 1)[0]
+    assert "--host $(API_HOST)" in api_recipe

@@ -34,6 +34,8 @@ Como roda: o Docker Compose sobe a infraestrutura (Postgres, Redis, Ollama, Phoe
 | Adaptador MCP de exemplo (perfil `tools`) | 8765 |
 | Open WebUI (perfil `ui`) | 38080 |
 
+Todas essas portas escutam **só no loopback** (`127.0.0.1`). Postgres (superusuário com senha padrão de desenvolvimento), Redis (sem senha), Ollama, Phoenix (sem login) e o adaptador MCP (confia no `X-User-Ref`) não podem ficar na rede local: quem os alcançasse passaria por cima da RLS e da ACL, envenenaria o cache ou leria os traces. Só a API e o Open WebUI podem ser expostos, por escolha do operador (ver [Acesso pela rede](#acesso-pela-rede)).
+
 ## Pré-requisitos
 
 - Linux com GPU NVIDIA, driver instalado e o **NVIDIA Container Toolkit** (o container do Ollama reserva a GPU). Medido com RTX 3060 6 GB e 14 GB de RAM; com menos RAM o fallback na CPU fica instável (ver [docs/mvp-medicoes.md](docs/mvp-medicoes.md)).
@@ -87,6 +89,16 @@ ENCAIXE_WEBUI_API_KEY=enc_... docker compose --profile ui up -d open-webui   # h
 ```
 
 O Open WebUI não manda identidade de usuário nem id de conversa. Ele roda no modo sem identidade: vê só documentos `app:*`, recebe o histórico do próprio cliente como não confiável e nunca ganha ferramentas de escrita; cada mensagem cria uma conversa nova no banco. Serve para testes internos.
+
+### Acesso pela rede
+
+Por padrão nada sai da máquina. Para os backends das aplicações chamarem a API de outra máquina:
+
+```bash
+make api API_HOST=0.0.0.0    # a API passa a escutar em todas as interfaces, porta 8100
+```
+
+Faça isso só numa rede confiável: a API exige a chave, mas o tráfego vai sem TLS (o Caddy com TLS do spec fica fora do MVP; ver desvios). A infraestrutura continua no loopback.
 
 ### Parando
 

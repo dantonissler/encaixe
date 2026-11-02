@@ -15,8 +15,11 @@ migrate:
 # Em execução nada é baixado nem reportado (modelos HF vêm do `make models`).
 OFFLINE = HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1
 
+# Só no loopback por padrão. Backends em outras máquinas: `make api API_HOST=0.0.0.0` (README).
+API_HOST ?= 127.0.0.1
+
 api:
-	$(OFFLINE) uv run uvicorn encaixe.api.app:create_app --factory --port 8100
+	$(OFFLINE) uv run uvicorn encaixe.api.app:create_app --factory --host $(API_HOST) --port 8100
 
 worker:
 	$(OFFLINE) uv run arq encaixe.workers.settings.WorkerSettings
