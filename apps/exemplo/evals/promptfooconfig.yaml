@@ -1,0 +1,29 @@
+# Rode com `make eval APP=exemplo` (a API em :8100 precisa estar de pé; o override de modelo
+# via X-Encaixe-Model só vale com ENCAIXE_ENV=dev no servidor).
+description: encaixe - app exemplo (Aurora Ltda)
+prompts:
+  - "{{prompt}}"
+providers:
+  - id: http
+    label: encaixe
+    config:
+      url: http://localhost:8100/v1/chat/completions
+      method: POST
+      headers:
+        Content-Type: application/json
+        Authorization: "Bearer {{env.ENCAIXE_EVAL_API_KEY}}"
+        X-User-Ref: "{{user_ref}}"
+        X-User-Groups: "{{groups}}"
+        X-Encaixe-Model: "{{env.ENCAIXE_EVAL_MODEL}}"
+      body:
+        model: exemplo
+        messages:
+          - role: user
+            content: "{{prompt}}"
+        stream: false
+      transformResponse: json.choices[0].message.content
+      timeout: 180000
+evaluateOptions:
+  maxConcurrency: 1
+  cache: false
+tests: file://tests.yaml

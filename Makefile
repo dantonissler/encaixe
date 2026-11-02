@@ -27,11 +27,23 @@ test-integration:
 lint:
 	uv run ruff check src tests && uv run ruff format --check src tests
 
+APP ?= exemplo
+PROMPTFOO = scripts/promptfoo.sh
+
+# Precisa da stack de pé (API :8100, worker, adaptador MCP) e de ENCAIXE_EVAL_API_KEY
+# (veja `uv run encaixe seed --app $(APP)`). O promptfoo sai com código != 0 quando há casos
+# reprovados; quem julga a regressão é o compare_baseline.py (último passo).
 eval:
+	rm -f evals/results/$(APP).json evals/results/$(APP)-retrieval.json
+	uv run python evals/multiturn.py --app $(APP) --seed-only
+	-$(PROMPTFOO) eval -c apps/$(APP)/evals/promptfooconfig.yaml -o evals/results/$(APP).json
+	uv run python evals/multiturn.py --app $(APP)
 	uv run python evals/retrieval.py --app $(APP)
+	uv run python evals/compare_baseline.py --app $(APP)
 
 bakeoff:
-	uv run python scripts/bakeoff.py
+	uv run python evals/multiturn.py --app $(APP) --seed-only
+	uv run python scripts/bakeoff.py --app $(APP) $(if $(MODELS),--models $(MODELS))
 
 hooks:
 	git config core.hooksPath scripts/git-hooks
