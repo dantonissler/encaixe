@@ -3,7 +3,7 @@ import pytest
 from pydantic_ai.models.test import TestModel
 
 from encaixe.core.config import AppConfig, BudgetConfig, ContextConfig, LoadedApp, ModelsConfig
-from encaixe.core.types import ChatMessage
+from encaixe.core.types import ChatMessage, GuardResult
 from encaixe.output.schemas import RespostaBase
 from encaixe.settings import Settings
 from encaixe.workers.summarize import summarize_conversation
@@ -25,7 +25,22 @@ class FakeStore:
         self.saved = (summary, covers_until_seq)
 
 
-def make_ctx(store, history_budget=45):
+class FakeInjection:
+    """Bloqueia texto com `block_on`; registra o que checou."""
+
+    def __init__(self, block_on: str | None = None, fail: bool = False):
+        self.block_on, self.fail = block_on, fail
+        self.seen: list[str] = []
+
+    async def check_text(self, text):
+        self.seen.append(text)
+        if self.fail:
+            raise RuntimeError("classificador fora do ar")
+        verdict = "block" if self.block_on and self.block_on in text else "pass"
+        return GuardResult("prompt_injection", verdict)
+
+
+def make_ctx(store, history_budget=45, injection=None):
     app = LoadedApp(
         config=AppConfig(
             id="a",
@@ -48,6 +63,7 @@ def make_ctx(store, history_budget=45):
         "apps": {"a": app},
         "settings": Settings(),
         "model_factory": factory,
+        "injection": injection or FakeInjection(),
     }, seen
 
 
@@ -159,3 +175,29 @@ async def test_summarizer_disables_reasoning():
     assert await summarize_conversation(ctx, "a", "c1") is True
     # o Qwen3.5 pensa por padrão; sem isso o /v1 gasta o orçamento em `reasoning`
     assert seen and all(s["extra_body"]["reasoning_effort"] == "none" for s in seen)
+
+
+# --- revisão final I2: o resumo novo passa pelo detector de injeção antes de ser gravado -----
+
+
+@pytest.mark.asyncio
+async def test_new_summary_is_checked_and_saved_when_clean():
+    injection = FakeInjection(block_on="ignore as regras")
+    store = FakeStore(turns(4), summary=("resumo velho", 0))
+    ctx, _ = make_ctx(store, injection=injection)
+    assert await summarize_conversation(ctx, "a", "c1") is True
+    assert injection.seen == ["RESUMO NOVO"] and store.saved == ("RESUMO NOVO", 4)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("injection", [FakeInjection(block_on="RESUMO"), FakeInjection(fail=True)])
+async def test_flagged_summary_is_not_saved_and_previous_is_kept(injection):
+    from structlog.testing import capture_logs
+
+    store = FakeStore(turns(4), summary=("resumo velho", 0))
+    ctx, _ = make_ctx(store, injection=injection)
+    with capture_logs() as logs:
+        assert await summarize_conversation(ctx, "a", "c1") is False
+    assert store.saved is None  # o anterior continua valendo
+    rejected = [entry for entry in logs if entry["event"] == "summary_rejected"]
+    assert len(rejected) == 1 and rejected[0]["conversation_id"] == "c1"

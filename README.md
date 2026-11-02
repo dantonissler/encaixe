@@ -8,7 +8,7 @@ Plataforma de agentes de IA que roda 100% local, montada em 13 peças plugáveis
 
 | # | Peça | Como está no MVP |
 |---|------|------------------|
-| 1 | Janela de contexto | Histórico no Postgres, orçamento de tokens por seção (por app) e resumo acumulado gerado depois da resposta pelo worker |
+| 1 | Janela de contexto | Histórico no Postgres, orçamento de tokens por seção (por app) e resumo acumulado gerado depois da resposta pelo worker. O resumo só é gravado se passar no detector de injeção (senão fica o anterior e o log registra `summary_rejected`) e volta ao modelo como bloco de dados delimitado numa mensagem do usuário, logo depois do system prompt, nunca como mensagem de sistema |
 | 2 | RAG | Docling, chunking por títulos, busca híbrida (pgvector + full-text com `unaccent`) fundida por RRF e rerank com `bge-reranker-v2-m3` (CPU) dos `top_k` candidatos (10 no `exemplo`) |
 | 3 | Embeddings | `bge-m3` (1024 dimensões) no Ollama, na CPU, com cache no Redis |
 | 4 | Banco vetorial | PostgreSQL 17 + pgvector 0.8, RLS por app e ACL por trecho |

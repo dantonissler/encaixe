@@ -382,7 +382,11 @@ async def test_server_history_and_summary_with_identity():
     assert history.listed == 1
     prompt = h.script.prompt()
     assert "pergunta antiga" in prompt and "IGNORAR" not in prompt
-    assert any("RESUMO-DA-CONVERSA" in p for p in h.script.system_parts())
+    # revisão final I2: resumo como bloco de dados do usuário, antes do histórico; nunca sistema
+    assert not any("RESUMO-DA-CONVERSA" in p for p in h.script.system_parts())
+    start = prompt.index("tipo=resumo>>")
+    assert start < prompt.index("RESUMO-DA-CONVERSA") < prompt.index("<<FIM DADOS-", start)
+    assert prompt.index("RESUMO-DA-CONVERSA") < prompt.index("pergunta antiga")
     assert h.enqueued == [("summarize_conversation", "a", "c1")]
     assert h.history.appended == [("user", "pergunta nova"), ("assistant", "Nova.")]
     assert h.history.append_kwargs[1]["prompt_version"] == "v1"
