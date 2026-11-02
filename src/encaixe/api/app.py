@@ -20,6 +20,7 @@ from encaixe.observability.logging import setup_logging
 from encaixe.observability.tracing import setup_tracing
 from encaixe.pipeline.stages import current_trace_id
 from encaixe.settings import Settings, get_settings
+from encaixe.warmup import warm_up
 from encaixe.wiring import Deps, build_deps, close_deps, set_runtime_env
 
 log = structlog.get_logger(__name__)
@@ -76,6 +77,8 @@ def create_app(
         provider = setup_tracing(cfg)
         built = await build_deps(cfg)  # o mesmo Settings: guards compartilhados com o pipeline
         api.state.deps = built
+        if cfg.warmup:  # modelos carregados antes da 1ª requisição; Ollama fora não impede
+            await warm_up(built)
         log.info("api_started", env=cfg.env, apps=sorted(built.apps))
         try:
             yield

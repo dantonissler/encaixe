@@ -38,6 +38,11 @@ class CrossEncoderReranker:
                     self._model = await asyncio.to_thread(self._factory, self.model_id)
         return self._model
 
+    async def warm_up(self) -> None:
+        """Carrega o modelo e faz uma predição mínima (aquecimento na partida da API)."""
+        model = await self._get_model()
+        await asyncio.to_thread(self._predict, model, [("aquecimento", "aquecimento")])
+
     def _predict(self, model: Any, pairs: list[tuple[str, str]]) -> list[float]:
         with self._predict_lock:  # modelo compartilhado entre requisições
             return [float(s) for s in model.predict(pairs)]

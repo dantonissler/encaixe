@@ -77,6 +77,7 @@ class Deps:
     arq_pool: ArqRedis | None = None
     embedder: OllamaEmbedder | None = None
     store: PgVectorStore | None = None
+    reranker: CrossEncoderReranker | None = None  # o mesmo do retriever (aquecimento)
 
 
 async def build_deps(settings: Settings) -> Deps:
@@ -95,6 +96,7 @@ async def build_deps(settings: Settings) -> Deps:
     store = PgVectorStore(pool)
     injection = get_guard("prompt_injection", settings)  # mesma instância do guard de entrada
     breakers = BreakerRegistry()  # um por processo; a cadeia é montada por requisição
+    reranker = CrossEncoderReranker(settings.reranker_model_id)
 
     def chain_factory(primary: str, fallbacks: list[str]) -> tuple[Model, list[str]]:
         return build_chain(primary, fallbacks, settings, breakers)
@@ -106,9 +108,7 @@ async def build_deps(settings: Settings) -> Deps:
         settings=settings,
         apps=apps,
         history_store=PgHistoryStore(pool),
-        retriever=HybridRetriever(
-            embedder, store, CrossEncoderReranker(settings.reranker_model_id)
-        ),
+        retriever=HybridRetriever(embedder, store, reranker),
         injection=injection,
         approvals=ApprovalService(PgApprovalStore(pool), injection=injection),
         chain_factory=chain_factory,
@@ -125,6 +125,7 @@ async def build_deps(settings: Settings) -> Deps:
         arq_pool=arq_pool,
         embedder=embedder,
         store=store,
+        reranker=reranker,
     )
 
 

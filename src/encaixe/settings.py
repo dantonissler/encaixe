@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     embedding_dims: int = 1024
     reranker_model_id: str = "BAAI/bge-reranker-v2-m3"
     max_user_message_chars: int = 8000
+    # Aquecimento na partida da API (reranker e modelos do Ollama usados pelas apps).
+    warmup: bool = True
     log_full_text: bool = True
     # Modelos do Docling baixados com `docling-tools models download` (execução offline).
     # Também lê DOCLING_ARTIFACTS_PATH, a variável do próprio Docling. Vazio = padrão do

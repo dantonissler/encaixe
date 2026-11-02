@@ -49,6 +49,13 @@ class InjectionGuard:
                     self._pipe = await asyncio.to_thread(self._factory, self.model_id)
         return self._pipe
 
+    async def warm_up(self) -> None:
+        """Carrega o classificador (só com o backend `model`) e classifica um texto curto."""
+        if self.backend != "model":
+            return
+        pipe = await self._get_pipe()
+        await asyncio.to_thread(self._classify, pipe, "aquecimento")
+
     def _windows(self, pipe: Any, text: str) -> list[str]:
         tok = getattr(pipe, "tokenizer", None)
         if tok is None:

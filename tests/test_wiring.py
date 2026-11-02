@@ -48,6 +48,7 @@ async def test_build_and_close_deps(settings):
         _model, effective = deps.chain_factory("ollama:qwen3.5:4b", ["ollama:llama3.2-3b-cpu"])
         assert effective == ["ollama:qwen3.5:4b", "ollama:llama3.2-3b-cpu"]
         assert deps.approvals._injection is deps.injection
+        assert deps.retriever._reranker is deps.reranker  # o aquecido é o usado nas buscas
     finally:
         await wiring.close_deps(deps)
 
