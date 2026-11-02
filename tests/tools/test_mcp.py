@@ -14,7 +14,7 @@ from encaixe.output.schemas import OUTPUT_TOOL
 from encaixe.tools.approvals import ApprovalService
 from encaixe.tools.mcp import McpGuardToolset, build_mcp_toolsets
 from encaixe.tools.native import AgentDeps
-from encaixe.tools.results import BLOCKED, UNAVAILABLE
+from encaixe.tools.results import BLOCKED, TRUNCATED, UNAVAILABLE
 
 from .helpers import FakeApprovalRepo, make_ctx
 
@@ -147,6 +147,23 @@ async def test_read_tool_wrapped_and_recorded():
     out = returns(res)[0]
     assert out.startswith("<<B tipo=ferramenta>>") and "tarefa a" in out and "listar_tarefas" in out
     assert ctx.tools_called == ["listar_tarefas"]
+
+
+async def test_long_tool_result_reaches_model_truncated():
+    """Revisão final m1: resultado de ferramenta tem limite de tamanho (spec §6.6)."""
+    s = FastMCP("t")
+
+    @s.tool
+    def listar_tarefas() -> str:
+        """Lista tarefas."""
+        return "a" * 300 + "CAUDA"
+
+    ctx = make_ctx()
+    deps = mk_deps(ctx)
+    deps.tool_result_max_chars = 100
+    agent = Agent(calling_model("listar_tarefas", {}), toolsets=build(ctx, s), deps_type=AgentDeps)
+    out = returns(await agent.run("x", deps=deps))[0]
+    assert TRUNCATED in out and "CAUDA" not in out and "a" * 101 not in out
 
 
 async def test_tool_result_injection_blocked():

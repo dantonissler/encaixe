@@ -128,3 +128,18 @@ async def test_ambiguous_does_not_approve(msg):
     await pend(svc, make_ctx())
     await svc.resolve_turn(make_ctx(message=msg), "B")
     assert calls == [] and repo.rows[0]["status"] == "cancelled"
+
+
+async def test_executed_action_result_is_truncated():
+    """Revisão final m1: o resultado da ação aprovada também respeita o limite."""
+    from encaixe.tools.results import TRUNCATED
+
+    repo = FakeApprovalRepo()
+
+    async def caller(server_url, tool, args, headers):
+        return "r" * 500 + "CAUDA"
+
+    svc = ApprovalService(repo, caller, Inj(), max_result_chars=50)
+    await pend(svc, make_ctx())
+    out = await svc.resolve_turn(make_ctx(message="sim"), "B")
+    assert out is not None and TRUNCATED in out and "CAUDA" not in out

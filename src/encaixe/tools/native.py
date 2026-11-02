@@ -14,6 +14,7 @@ from encaixe.core.registry import UnknownImplementationError
 from encaixe.core.types import RequestContext
 from encaixe.guardrails.injection import InjectionGuard
 from encaixe.observability.spans import traced
+from encaixe.tools.results import DEFAULT_MAX_CHARS
 
 if TYPE_CHECKING:
     from encaixe.tools.approvals import ApprovalService
@@ -26,6 +27,7 @@ class AgentDeps:
     injection: InjectionGuard
     approvals: ApprovalService
     boundary: str
+    tool_result_max_chars: int = DEFAULT_MAX_CHARS
 
 
 @traced("tool.buscar_documentos")

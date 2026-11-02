@@ -271,6 +271,7 @@ class ChatPipeline:
             injection=self.deps.injection,
             approvals=self.deps.approvals,
             boundary=built.boundary,
+            tool_result_max_chars=self.deps.settings.tool_result_max_chars,
         )
         queue: asyncio.Queue[AgentUpdate] = asyncio.Queue()
         task = asyncio.create_task(

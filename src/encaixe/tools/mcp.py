@@ -54,7 +54,9 @@ class McpGuardToolset(WrapperToolset[AgentDeps]):
                 # O texto vem do adaptador: é dado não confiável como qualquer resultado (§6.6).
                 # Sem orçamento, o Pydantic AI encerraria a execução; aí vira "indisponível".
                 if ctx.retry < tool.max_retries:
-                    safe = await sanitize_tool_result(deps.injection, name, exc.message, deps.boundary)
+                    safe = await sanitize_tool_result(
+                        deps.injection, name, exc.message, deps.boundary, deps.tool_result_max_chars
+                    )
                     raise ModelRetry(safe) from exc
                 log.warning("mcp_tool_retries_exhausted", tool=name, server=self.server, error=exc.message)
                 if span is not None:
@@ -66,7 +68,9 @@ class McpGuardToolset(WrapperToolset[AgentDeps]):
                     span.set_attribute("tool.unavailable", True)
                 return UNAVAILABLE
         deps.ctx.tools_called.append(name)
-        return await sanitize_tool_result(deps.injection, name, result, deps.boundary)
+        return await sanitize_tool_result(
+            deps.injection, name, result, deps.boundary, deps.tool_result_max_chars
+        )
 
 
 def build_mcp_toolsets(

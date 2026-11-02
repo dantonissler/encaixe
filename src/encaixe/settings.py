@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     embedding_dims: int = 1024
     reranker_model_id: str = "BAAI/bge-reranker-v2-m3"
     max_user_message_chars: int = 8000
+    # Resultado de ferramenta MCP (e de ação aprovada) acima disto é cortado com
+    # "[resultado truncado]" antes do guard de injeção e da delimitação (spec §6.6).
+    tool_result_max_chars: int = 4000
     # Aquecimento na partida da API (reranker e modelos do Ollama usados pelas apps).
     warmup: bool = True
     log_full_text: bool = True

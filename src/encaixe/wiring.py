@@ -110,7 +110,11 @@ async def build_deps(settings: Settings) -> Deps:
         history_store=PgHistoryStore(pool),
         retriever=HybridRetriever(embedder, store, reranker),
         injection=injection,
-        approvals=ApprovalService(PgApprovalStore(pool), injection=injection),
+        approvals=ApprovalService(
+            PgApprovalStore(pool),
+            injection=injection,
+            max_result_chars=settings.tool_result_max_chars,
+        ),
         chain_factory=chain_factory,
         corpus_version=corpus_version,
         cache=ExactCache(redis),

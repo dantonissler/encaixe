@@ -8,7 +8,7 @@ from typing import Any
 from encaixe.core.types import RequestContext
 from encaixe.messages import APPROVAL_CANCELLED
 from encaixe.observability.spans import traced
-from encaixe.tools.results import sanitize_tool_result
+from encaixe.tools.results import DEFAULT_MAX_CHARS, sanitize_tool_result
 
 MCP_TIMEOUT_S = 15.0
 McpCaller = Callable[[str, str, dict, dict[str, str]], Awaitable[str]]
@@ -47,10 +47,17 @@ async def default_mcp_caller(url: str, tool: str, args: dict, headers: dict[str,
 
 
 class ApprovalService:
-    def __init__(self, repo: Any, mcp_caller: McpCaller | None = None, injection: Any = None) -> None:
+    def __init__(
+        self,
+        repo: Any,
+        mcp_caller: McpCaller | None = None,
+        injection: Any = None,
+        max_result_chars: int = DEFAULT_MAX_CHARS,
+    ) -> None:
         self._repo = repo
         self._injection = injection
         self._call = mcp_caller or default_mcp_caller
+        self._max_result_chars = max_result_chars
 
     async def request(self, ctx: RequestContext, server: str, tool: str, args: dict) -> str:
         if not ctx.conversation_id:
@@ -90,5 +97,7 @@ class ApprovalService:
         except Exception as exc:  # noqa: BLE001
             return f"A ação {pending.tool} falhou: {type(exc).__name__}."
         ctx.tools_called.append(pending.tool)
-        body = await sanitize_tool_result(self._injection, pending.tool, result, boundary)
+        body = await sanitize_tool_result(
+            self._injection, pending.tool, result, boundary, self._max_result_chars
+        )
         return f"Ação confirmada e executada: {pending.tool}.\n{body}"
