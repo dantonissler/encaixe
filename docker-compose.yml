@@ -89,17 +89,19 @@ services:
   open-webui:
     profiles: ["ui"]
     image: ghcr.io/open-webui/open-webui:v0.12.5
-    ports:
-      - "127.0.0.1:38080:8080"
+    # Rede do host: alcança a API em 127.0.0.1:8100 (o `make api` escuta só no loopback, que
+    # um container na rede bridge não alcança) e escuta em 127.0.0.1:38080 sem publicar porta.
+    # OPEN_WEBUI_HOST=0.0.0.0 o expõe na rede local (README, "Acesso pela rede").
+    network_mode: host
     environment:
-      OPENAI_API_BASE_URL: http://host.docker.internal:8100/v1
+      HOST: ${OPEN_WEBUI_HOST:-127.0.0.1}
+      PORT: "38080"
+      OPENAI_API_BASE_URL: http://127.0.0.1:8100/v1
       OPENAI_API_KEY: ${ENCAIXE_WEBUI_API_KEY:-dev-key}
       ENABLE_OLLAMA_API: "false"
       SCARF_NO_ANALYTICS: "true"
       ANONYMIZED_TELEMETRY: "false"
       DO_NOT_TRACK: "true"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - openwebui:/app/backend/data
 

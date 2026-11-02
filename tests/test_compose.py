@@ -31,6 +31,13 @@ def _host_ip(spec: object) -> str | None:
     return parts[0] if len(parts) == 3 else None
 
 
+def _default(value: str) -> str:
+    """Valor padrão de uma interpolação do Compose (`${VAR:-padrão}`), ou o próprio valor."""
+    if value.startswith("${") and ":-" in value:
+        return value[value.index(":-") + 2 : -1]
+    return value
+
+
 def test_every_published_port_is_loopback_only():
     """Revisão final C1: Postgres (superusuário), Redis (sem senha), Ollama, Phoenix (sem
     login) e o adaptador MCP (confia em X-User-Ref) não podem ficar na rede local. Spec §3:
@@ -42,8 +49,8 @@ def test_every_published_port_is_loopback_only():
             assert _host_ip(spec) == "127.0.0.1", f"{name} publica {spec!r} fora do loopback"
             published += 1
         if service.get("network_mode") == "host":
-            env = service.get("environment", {})
-            assert env.get("HOST") == "127.0.0.1", f"{name} na rede do host sem HOST=127.0.0.1"
+            host = _default(service.get("environment", {}).get("HOST", ""))
+            assert host == "127.0.0.1", f"{name} na rede do host sem HOST=127.0.0.1 por padrão"
     assert published >= 5  # postgres, redis, ollama, phoenix, mcp-tarefas
 
 
@@ -72,3 +79,16 @@ def test_make_eval_clears_the_response_cache_first():
     clear = lines.index("uv run encaixe cache clear")
     promptfoo = next(i for i, line in enumerate(lines) if "$(PROMPTFOO)" in line)
     assert clear < promptfoo
+
+
+def test_open_webui_reaches_the_api_on_loopback_without_publishing_ports():
+    """Revisão final I6: `make api` escuta só em 127.0.0.1:8100, que um container na rede
+    bridge não alcança (host.docker.internal cai no IP do gateway). Na rede do host o Open
+    WebUI fala com 127.0.0.1:8100 e escuta em 127.0.0.1:38080, sem expor nada."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    webui = compose["services"]["open-webui"]
+    env = webui["environment"]
+    assert webui["network_mode"] == "host"
+    assert "ports" not in webui and "extra_hosts" not in webui
+    assert _default(env["HOST"]) == "127.0.0.1" and str(env["PORT"]) == "38080"
+    assert env["OPENAI_API_BASE_URL"] == "http://127.0.0.1:8100/v1"
