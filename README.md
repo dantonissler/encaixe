@@ -100,6 +100,8 @@ make api API_HOST=0.0.0.0    # a API passa a escutar em todas as interfaces, por
 
 Faça isso só numa rede confiável: a API exige a chave, mas o tráfego vai sem TLS (o Caddy com TLS do spec fica fora do MVP; ver desvios). A infraestrutura continua no loopback.
 
+**Piloto (qualquer uso fora do desenvolvimento): rode a API com `ENCAIXE_ENV=prod`** (no `.env` ou `ENCAIXE_ENV=prod make api`). O padrão é `dev`, que aceita o header `X-Encaixe-Model` da disputa de modelos: com ele, qualquer portador de uma chave escolhe qual modelo do Ollama responde, inclusive um sem a configuração da app. Em `prod` o header é ignorado.
+
 ### Parando
 
 ```bash
