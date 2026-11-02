@@ -52,7 +52,7 @@ cp .env.example .env         # opcional: os padrões já apontam para as portas 
 
 make up                      # Postgres, Redis, Ollama e Phoenix (espera ficarem saudáveis)
 make models                  # uma vez: modelos do Ollama + aliases de CPU + reranker e Docling
-make migrate                 # schema do banco
+make migrate                 # schema do banco (sem ele o /ready fica em 503: postgres:schema)
 
 # adaptador MCP de exemplo (tarefas por usuário, em memória)
 docker compose --profile tools up -d --build mcp-tarefas
@@ -238,4 +238,4 @@ Aceita respostas no formato do Llama Guard e no de Sim/Não (ShieldGemma, Granit
 - O adaptador MCP de exemplo guarda as tarefas em memória: reiniciar o container apaga tudo.
 - Reenviar um documento alterado cria um documento novo ao lado do antigo; apague o antigo pela API. Reenviar os mesmos bytes com outra ACL devolve o documento existente com a ACL antiga (não há endpoint para trocar ACL).
 - O cache exato inclui o modelo na chave: repetir a disputa de modelos no mesmo corpus mede respostas em cache.
-- `/ready` responde 503 enquanto algum modelo de alguma app não estiver no Ollama.
+- `/ready` responde 503 enquanto algum modelo de alguma app não estiver no Ollama ou enquanto houver migração pendente no banco (`postgres:schema` em `missing`: rode `make migrate`).

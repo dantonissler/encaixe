@@ -10,7 +10,7 @@ models:
 	scripts/pull-models.sh
 
 migrate:
-	uv run python -m encaixe.db.migrate
+	uv run encaixe migrate
 
 # Em execução nada é baixado nem reportado (modelos HF vêm do `make models`).
 OFFLINE = HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1

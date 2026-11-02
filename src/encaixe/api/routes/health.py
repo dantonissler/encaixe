@@ -1,4 +1,5 @@
-"""`GET /health` (processo vivo) e `GET /ready` (Postgres, Redis e modelos no Ollama)."""
+"""`GET /health` (processo vivo) e `GET /ready` (Postgres com o schema migrado, Redis e
+modelos no Ollama)."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from encaixe.api.auth import get_deps
+from encaixe.db.migrate import pending_migrations
 from encaixe.wiring import Deps
 
 log = structlog.get_logger(__name__)
@@ -49,6 +51,14 @@ async def _postgres_ok(deps: Deps) -> bool:
         return await deps.pool.fetchval("SELECT 1") == 1
 
 
+async def _schema_ok(deps: Deps) -> bool:
+    """Todas as migrações aplicadas (banco novo sem `make migrate` não está pronto)."""
+    if deps.pool is None:
+        return False
+    async with asyncio.timeout(CHECK_TIMEOUT_S):
+        return not await pending_migrations(deps.pool)
+
+
 async def _redis_ok(deps: Deps) -> bool:
     if deps.redis is None:
         return False
@@ -83,6 +93,8 @@ async def ready(deps: Annotated[Deps, Depends(get_deps)]) -> JSONResponse:
         _models_or_none(deps),
     )
     missing = [name for name, ok in (("postgres", postgres), ("redis", redis)) if not ok]
+    if postgres and not await _probe("postgres:schema", _schema_ok(deps)):
+        missing.insert(0, "postgres:schema")
     if models is None:
         missing.append("ollama")
     else:

@@ -6,6 +6,7 @@ import httpx
 import respx
 
 from encaixe.core.types import ChatMessage
+from encaixe.db.migrate import migration_versions
 from encaixe.settings import Settings
 from pipeline.helpers import make_app
 
@@ -23,14 +24,28 @@ TAGS = {
 }
 
 
+ALL_MIGRATIONS = migration_versions()
+
+
 class FakePool:
-    def __init__(self, fail: bool = False):
+    """`applied`: versões em schema_migrations (None = tabela inexistente, banco virgem)."""
+
+    def __init__(self, fail: bool = False, applied: list[str] | None = ALL_MIGRATIONS):
         self.fail = fail
+        self.applied = applied
 
     async def fetchval(self, query, *args):
         if self.fail:
             raise ConnectionRefusedError("postgres fora do ar")
+        if "to_regclass" in query:
+            return self.applied is not None
         return 1
+
+    async def fetch(self, query, *args):
+        if self.fail:
+            raise ConnectionRefusedError("postgres fora do ar")
+        assert self.applied is not None, "consultou schema_migrations sem a tabela existir"
+        return [{"version": v} for v in self.applied]
 
 
 class FakeRedis:
@@ -43,12 +58,12 @@ class FakeRedis:
         return True
 
 
-def ready_api(*, pool_fail=False, redis_fail=False):
+def ready_api(*, pool_fail=False, redis_fail=False, applied=ALL_MIGRATIONS):
     app = make_app()
     app.config.models.primary = "ollama:qwen3.5:4b"
     app.config.models.fallbacks = ["ollama:llama3.2-3b-cpu"]
     api = make_api(app, settings=Settings(ollama_base_url=OLLAMA))
-    api.h.deps.pool = FakePool(pool_fail)
+    api.h.deps.pool = FakePool(pool_fail, applied)
     api.h.deps.redis = FakeRedis(redis_fail)
     return api
 
@@ -138,3 +153,23 @@ async def test_ready_requires_both_content_guards():
         async with api.client(key=None) as c:
             r = await c.get("/ready")
     assert r.status_code == 503 and r.json()["missing"] == ["ollama:shieldgemma-2b-cpu"]
+
+
+async def test_ready_503_when_database_was_never_migrated():
+    """Revisão final I4: banco novo sem `make migrate` não está pronto."""
+    api = ready_api(applied=None)
+    with respx.mock(base_url=OLLAMA) as mock:
+        mock.get("/api/tags").respond(json=TAGS)
+        async with api.client(key=None) as c:
+            r = await c.get("/ready")
+    assert r.status_code == 503 and r.json()["missing"] == ["postgres:schema"]
+
+
+async def test_ready_503_when_a_migration_is_pending():
+    assert len(ALL_MIGRATIONS) >= 2
+    api = ready_api(applied=ALL_MIGRATIONS[:-1])
+    with respx.mock(base_url=OLLAMA) as mock:
+        mock.get("/api/tags").respond(json=TAGS)
+        async with api.client(key=None) as c:
+            r = await c.get("/ready")
+    assert r.status_code == 503 and r.json()["missing"] == ["postgres:schema"]

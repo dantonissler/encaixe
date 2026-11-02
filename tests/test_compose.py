@@ -23,14 +23,12 @@ def test_ollama_keeps_every_hot_model_loaded():
     assert int(env.get("OLLAMA_MAX_LOADED_MODELS", 3)) >= hot
 
 
-def _published(spec: object) -> tuple[str | None, str]:
-    """(IP do host, resto) de uma entrada de `ports` (forma curta ou longa do Compose)."""
+def _host_ip(spec: object) -> str | None:
+    """IP do host de uma entrada de `ports` (forma curta ou longa do Compose)."""
     if isinstance(spec, dict):
-        return spec.get("host_ip"), str(spec.get("published", ""))
+        return spec.get("host_ip")
     parts = str(spec).split(":")
-    if len(parts) == 3:
-        return parts[0], ":".join(parts[1:])
-    return None, ":".join(parts)
+    return parts[0] if len(parts) == 3 else None
 
 
 def test_every_published_port_is_loopback_only():
@@ -41,8 +39,7 @@ def test_every_published_port_is_loopback_only():
     published = 0
     for name, service in compose["services"].items():
         for spec in service.get("ports", []):
-            host_ip, rest = _published(spec)
-            assert host_ip == "127.0.0.1", f"{name} publica {spec!r} fora do loopback"
+            assert _host_ip(spec) == "127.0.0.1", f"{name} publica {spec!r} fora do loopback"
             published += 1
         if service.get("network_mode") == "host":
             env = service.get("environment", {})
@@ -57,3 +54,10 @@ def test_make_api_binds_loopback_by_default():
     assert "API_HOST ?= 127.0.0.1" in makefile
     api_recipe = makefile.split("\napi:\n", 1)[1].split("\n\n", 1)[0]
     assert "--host $(API_HOST)" in api_recipe
+
+
+def test_make_migrate_runs_the_cli():
+    """Revisão final I4: `python -m encaixe.db.migrate` não tem `__main__` e não fazia nada."""
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    recipe = makefile.split("\nmigrate:\n", 1)[1].split("\n\n", 1)[0]
+    assert recipe.strip() == "uv run encaixe migrate"
