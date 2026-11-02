@@ -7,7 +7,7 @@ context:
   budget: {system: 1500, summary: 500, history: 2500, rag: 2500, user: 800, output: 1000}
 rag:
   enabled: true
-  top_k: 20
+  top_k: 10
   rerank_top_n: 5
   require_citations: true
 tools:
