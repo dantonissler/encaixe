@@ -6,9 +6,13 @@
   `settings.safety_secondary_ignore_categories` (padrão S1 e S6, os falsos positivos medidos
   em pedidos com códigos e em respostas de salário). Sem categoria, conta.
 
-Os dois rodam ao mesmo tempo; bloqueia se qualquer um bloquear. Erro de qualquer modelo (fora
-do ar, resposta ilegível) vira exceção, e o runner aplica `on_guard_unavailable`; um bloqueio
-certo de um dos modelos vale mesmo com erro no outro. Medição em `evals/guard_probe.py`.
+Na entrada os dois rodam ao mesmo tempo; bloqueia se qualquer um bloquear. Na saída (par
+usuário/resposta) roda só o secundário, porque o ShieldGemma levava ~7 s na CPU e os falsos
+positivos da saída eram S1/S6; `settings.safety_output_primary` põe o principal de volta, e
+sem secundário a saída usa o principal (nunca fica sem checagem). Erro de qualquer modelo
+(fora do ar, resposta ilegível) vira exceção, e o runner aplica `on_guard_unavailable`; um
+bloqueio certo de um dos modelos vale mesmo com erro no outro. Medição em
+`evals/guard_probe.py`.
 """
 
 from __future__ import annotations
@@ -83,12 +87,17 @@ class ContentSafetyGuard:
             OllamaSafetyModel(secondary, base, self._client, None) if secondary else None
         )
         self.ignore = set(settings.safety_secondary_ignore_categories)
+        both = [m for m in (self.primary, self.secondary) if m is not None]
+        self._input = both
+        if settings.safety_output_primary or self.secondary is None:
+            self._output = both
+        else:
+            self._output = [self.secondary]
 
     def models(self) -> list[str]:
         return [m.model for m in (self.primary, self.secondary) if m is not None]
 
-    async def _decide(self, messages: list[dict]) -> GuardResult:
-        backends = [m for m in (self.primary, self.secondary) if m is not None]
+    async def _decide(self, messages: list[dict], backends: list[OllamaSafetyModel]) -> GuardResult:
         answers = await asyncio.gather(*(m.ask(messages) for m in backends), return_exceptions=True)
         blocks: list[str] = []
         for backend, answer in zip(backends, answers, strict=True):
@@ -101,7 +110,9 @@ class ContentSafetyGuard:
                 blocks.append(f"{backend.model}:{','.join(categories) or 'unsafe'}")
                 continue
             counted = [c for c in categories if c not in self.ignore]
-            if counted or not categories:  # sem categoria não há o que ignorar
+            # "unsafe" sem categoria não tem o que ignorar: conta (fail-closed). Uma resposta
+            # truncada ou fora do formato não pode virar "seguro".
+            if counted or not categories:
                 blocks.append(f"{backend.model}:{','.join(counted) or 'unsafe'}")
         if blocks:
             return GuardResult(self.name, "block", "; ".join(blocks))
@@ -110,9 +121,11 @@ class ContentSafetyGuard:
                 raise answer  # o runner transforma em "unavailable"
         return GuardResult(self.name, "pass")
 
-    async def _checked(self, messages: list[dict]) -> GuardResult:
+    async def _checked(
+        self, messages: list[dict], backends: list[OllamaSafetyModel]
+    ) -> GuardResult:
         with traced("guard.content_safety") as span:
-            result = await self._decide(messages)
+            result = await self._decide(messages, backends)
             span.set_attribute("verdict", result.verdict)
             return result
 
@@ -121,11 +134,12 @@ class ContentSafetyGuard:
             [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": assistant_text},
-            ]
+            ],
+            self._output,
         )
 
     async def check(self, text: str, ctx: RequestContext) -> GuardResult:
-        return await self._checked([{"role": "user", "content": text}])
+        return await self._checked([{"role": "user", "content": text}], self._input)
 
     async def check_response(self, text: str, ctx: RequestContext) -> GuardResult:
         """Modo saída: ctx.user_message é o lado do usuário."""

@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     safety_secondary_ignore_categories: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["S1", "S6"]
     )
+    # Saída (par usuário/resposta): só o secundário, a não ser que isto ligue o principal
+    # também (o ShieldGemma leva ~7 s por checagem de saída na CPU).
+    safety_output_primary: bool = False
     embedding_model: str = "bge-m3-cpu"
     embedding_dims: int = 1024
     reranker_model_id: str = "BAAI/bge-reranker-v2-m3"

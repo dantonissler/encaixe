@@ -46,12 +46,19 @@ def test_content_safety_defaults(monkeypatch):
         "ENCAIXE_SAFETY_MODEL",
         "ENCAIXE_SAFETY_SECONDARY_MODEL",
         "ENCAIXE_SAFETY_SECONDARY_IGNORE_CATEGORIES",
+        "ENCAIXE_SAFETY_OUTPUT_PRIMARY",
     ):
         monkeypatch.delenv(name, raising=False)
     s = Settings(_env_file=None)
     assert s.safety_model == "shieldgemma-2b-cpu"
     assert s.safety_secondary_model == "llama-guard3-1b-cpu"
     assert s.safety_secondary_ignore_categories == ["S1", "S6"]
+    assert s.safety_output_primary is False
+
+
+def test_output_primary_from_env(monkeypatch):
+    monkeypatch.setenv("ENCAIXE_SAFETY_OUTPUT_PRIMARY", "true")
+    assert Settings(_env_file=None).safety_output_primary is True
 
 
 @pytest.mark.parametrize(
