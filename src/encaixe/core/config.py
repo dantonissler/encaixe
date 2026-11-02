@@ -116,15 +116,30 @@ class LoadedApp:
     config: AppConfig
     root: Path
     system_prompt: jinja2.Template
-    prompt_version: str
+    prompt_version: str  # hash do system.md (atributo `prompt.version` dos spans, spec §6.13)
     output_model: type[RespostaBase]
+    # hash de system.md + app.yaml + arquivo do schema: entra na chave do cache exato, para
+    # que mudar qualquer um deles (guards, RAG, schema...) não sirva respostas antigas.
+    app_version: str = ""
 
 
-def _load_schema(root: Path, ref: str) -> type[RespostaBase]:
+def _schema_file(root: Path, ref: str) -> tuple[Path, str, str]:
     module_name, _, class_name = ref.rpartition(".")
     if not module_name or not class_name:
         raise AppConfigError(f"output.schema inválido: '{ref}' (esperado 'modulo.Classe')")
-    path = root / f"{module_name}.py"
+    return root / f"{module_name}.py", module_name, class_name
+
+
+def _version(*parts: tuple[str, bytes]) -> str:
+    """Hash sem ambiguidade de vários arquivos (nome e tamanho entram no hash)."""
+    h = hashlib.sha256()
+    for name, data in parts:
+        h.update(name.encode("utf-8") + b"\0" + len(data).to_bytes(8, "big") + data)
+    return h.hexdigest()[:12]
+
+
+def _load_schema(root: Path, ref: str) -> type[RespostaBase]:
+    path, module_name, class_name = _schema_file(root, ref)
     if not path.is_file():
         raise AppConfigError(f"Arquivo de schema ausente: {path}")
     spec = importlib.util.spec_from_file_location(f"encaixe_app_{root.name}_{module_name}", path)
@@ -185,12 +200,19 @@ def _load_app(root: Path) -> LoadedApp:
         template = jinja2.Template(prompt_text)
     except jinja2.TemplateError as exc:
         raise AppConfigError(f"Template inválido em {prompt_path}: {exc}") from exc
+    output_model = _load_schema(root, config.output.schema_path)
+    schema_path = _schema_file(root, config.output.schema_path)[0]
     return LoadedApp(
         config=config,
         root=root,
         system_prompt=template,
         prompt_version=hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()[:12],
-        output_model=_load_schema(root, config.output.schema_path),
+        output_model=output_model,
+        app_version=_version(
+            ("prompts/system.md", prompt_text.encode("utf-8")),
+            ("app.yaml", yaml_path.read_bytes()),
+            (schema_path.name, schema_path.read_bytes()),
+        ),
     )
 
 

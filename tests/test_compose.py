@@ -61,3 +61,14 @@ def test_make_migrate_runs_the_cli():
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     recipe = makefile.split("\nmigrate:\n", 1)[1].split("\n\n", 1)[0]
     assert recipe.strip() == "uv run encaixe migrate"
+
+
+def test_make_eval_clears_the_response_cache_first():
+    """Revisão final I5: sem isso o eval reaproveitava respostas em cache (TTL 1 h) e não
+    passava pelos guards de saída novos."""
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    recipe = makefile.split("\neval:\n", 1)[1].split("\n\n", 1)[0]
+    lines = [line.strip() for line in recipe.splitlines()]
+    clear = lines.index("uv run encaixe cache clear")
+    promptfoo = next(i for i, line in enumerate(lines) if "$(PROMPTFOO)" in line)
+    assert clear < promptfoo

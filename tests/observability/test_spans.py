@@ -22,7 +22,9 @@ def exporter():
 def _ctx() -> RequestContext:
     from types import SimpleNamespace
 
-    app = SimpleNamespace(config=SimpleNamespace(id="exemplo"), prompt_version="v1")
+    app = SimpleNamespace(
+        config=SimpleNamespace(id="exemplo"), prompt_version="v1", app_version="a1"
+    )
     return RequestContext(
         request_id="r1",
         app=app,  # type: ignore[arg-type]
@@ -48,6 +50,7 @@ def test_traced_adds_ctx_attributes(exporter):
     assert span.attributes["app_id"] == "exemplo"
     assert span.attributes["conversation_id"] == "c1"
     assert span.attributes["prompt.version"] == "v1"
+    assert span.attributes["app.version"] == "a1"  # system.md + app.yaml + schema
     assert span.attributes["principals.fingerprint"] == ctx.principals.fingerprint()
     assert span.attributes["k"] == 3
 

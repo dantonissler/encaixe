@@ -31,6 +31,27 @@ def test_prompt_version_changes_with_prompt(tmp_path):
     assert load_apps(root)["exemplo"].prompt_version != v1
 
 
+@pytest.mark.parametrize(
+    "rel,extra",
+    [
+        ("app.yaml", "\n# só um comentário também muda a versão\n"),
+        ("schemas.py", "\n\nclass Outra(Resposta):\n    pass\n"),
+        ("prompts/system.md", "\nlinha extra\n"),
+    ],
+)
+def test_app_version_covers_prompt_app_yaml_and_schema(tmp_path, rel, extra):
+    """Revisão final I5: a chave do cache exato usa app_version; com só o system.md no hash,
+    mudar app.yaml ou schemas.py servia respostas antigas (e o eval as reaproveitava)."""
+    root = _copy(tmp_path)
+    before = load_apps(root)["exemplo"]
+    path = root / "exemplo" / rel
+    path.write_text(path.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    after = load_apps(root)["exemplo"]
+    assert len(after.app_version) == 12 and after.app_version != before.app_version
+    # prompt.version continua sendo o hash só do system.md
+    assert (after.prompt_version != before.prompt_version) == (rel == "prompts/system.md")
+
+
 def test_schema_not_subclass_raises(tmp_path):
     root = _copy(tmp_path)
     (root / "exemplo" / "schemas.py").write_text(

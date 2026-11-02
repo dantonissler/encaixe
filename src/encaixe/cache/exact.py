@@ -10,6 +10,8 @@ from encaixe.observability.spans import traced
 from encaixe.output.schemas import RespostaBase
 from encaixe.tools.native import SEARCH_TOOL
 
+RESPONSE_PREFIX = "enc:resp:"
+
 
 def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
@@ -18,7 +20,7 @@ def _normalize(text: str) -> str:
 def exact_key(
     *,
     app_id: str,
-    prompt_version: str,
+    app_version: str,
     model: str,
     principals: Principals,
     history: list[ChatMessage],
@@ -27,7 +29,7 @@ def exact_key(
 ) -> str:
     payload = {
         "app": app_id,
-        "prompt": prompt_version,
+        "app_version": app_version,  # system.md + app.yaml + schema
         "model": model,
         "principals": principals.fingerprint(),
         "history": [[m.role, m.content] for m in history],
@@ -35,7 +37,21 @@ def exact_key(
         "corpus": corpus_version,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return "enc:resp:" + hashlib.sha256(canonical.encode()).hexdigest()
+    return RESPONSE_PREFIX + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def clear_response_cache(redis) -> int:
+    """Apaga todas as respostas em cache (de todas as apps nesse Redis); devolve quantas."""
+    removed = 0
+    batch: list[str] = []
+    async for key in redis.scan_iter(match=RESPONSE_PREFIX + "*", count=500):
+        batch.append(key)
+        if len(batch) >= 500:
+            removed += await redis.delete(*batch)
+            batch.clear()
+    if batch:
+        removed += await redis.delete(*batch)
+    return removed
 
 
 class ExactCache:

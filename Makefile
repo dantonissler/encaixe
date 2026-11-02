@@ -39,7 +39,10 @@ PROMPTFOO = scripts/promptfoo.sh
 # Precisa da stack de pé (API :8100, worker, adaptador MCP) e de ENCAIXE_EVAL_API_KEY
 # (veja `uv run encaixe seed --app $(APP)`). O promptfoo sai com código != 0 quando há casos
 # reprovados; quem julga a regressão é o compare_baseline.py (último passo).
+# Limpa antes o cache de respostas (enc:resp:*) de TODAS as apps nesse Redis: senão o eval
+# mede respostas guardadas (TTL de 1 h), que não passam pelo pipeline atual.
 eval:
+	uv run encaixe cache clear
 	rm -f evals/results/$(APP).json evals/results/$(APP)-retrieval.json
 	uv run python evals/multiturn.py --app $(APP) --seed-only
 	-$(PROMPTFOO) eval -c apps/$(APP)/evals/promptfooconfig.yaml -o evals/results/$(APP).json

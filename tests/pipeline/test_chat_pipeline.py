@@ -244,6 +244,17 @@ async def test_cache_key_uses_override_model_and_principals():
     assert h.script.calls == 3 and len(set(h.cache.sets)) == 3
 
 
+async def test_cache_key_uses_app_version():
+    """Mudou app.yaml ou schemas.py (app_version): a resposta em cache não vale mais."""
+    app = make_app(rag=False)
+    h = make_harness(app, Script(answer("Ok.", [])))
+    pipeline = ChatPipeline(h.deps)
+    await collect(pipeline, make_ctx(app))
+    app.app_version = "outra-versao"
+    await collect(pipeline, make_ctx(app))
+    assert h.script.calls == 2 and len(set(h.cache.sets)) == 2
+
+
 async def test_cache_error_fails_open():
     app = make_app(rag=False)
     h = make_harness(app, Script(answer("Trinta dias.", [])), cache=FakeCache(fail=True))

@@ -18,6 +18,20 @@ async def _migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cache_clear(args: argparse.Namespace) -> int:
+    from redis.asyncio import Redis
+
+    from encaixe.cache.exact import clear_response_cache
+
+    redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        removed = await clear_response_cache(redis)
+    finally:
+        await redis.aclose()
+    print(f"respostas removidas do cache: {removed}")
+    return 0
+
+
 async def _keys_create(args: argparse.Namespace) -> int:
     from encaixe.db.pool import create_pool
     from encaixe.db.repos.keys import create_key
@@ -102,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     create = keys_sub.add_parser("create", help="cria uma chave para um app")
     create.add_argument("--app", required=True)
     create.set_defaults(func=_keys_create)
+
+    cache = sub.add_parser("cache", help="cache exato de respostas no Redis")
+    cache_sub = cache.add_subparsers(dest="cache_command", required=True)
+    p = cache_sub.add_parser("clear", help="apaga as respostas em cache de todas as apps")
+    p.set_defaults(func=_cache_clear)
 
     p = sub.add_parser("seed", help="envia o corpus de apps/<app>/docs pela API")
     p.add_argument("--app", required=True)

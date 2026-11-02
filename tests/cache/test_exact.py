@@ -1,4 +1,4 @@
-from encaixe.cache.exact import ExactCache, exact_key, is_cacheable
+from encaixe.cache.exact import ExactCache, clear_response_cache, exact_key, is_cacheable
 from encaixe.core.types import ChatMessage, GuardResult, Principals
 from encaixe.output.schemas import RespostaBase
 
@@ -6,7 +6,7 @@ from encaixe.output.schemas import RespostaBase
 def _key(**over):
     kw = {
         "app_id": "a",
-        "prompt_version": "v1",
+        "app_version": "v1",
         "model": "m",
         "principals": Principals(user_ref="u1"),
         "history": [ChatMessage(role="user", content="oi")],
@@ -23,6 +23,7 @@ def test_key_differs_by_principals_and_corpus_version():
     assert _key(principals=Principals(user_ref="u2")) != base
     assert _key(corpus_version=2) != base
     assert _key(app_id="b") != base
+    assert _key(app_version="v2") != base
 
 
 def test_key_normalizes_whitespace_and_case():
@@ -73,3 +74,14 @@ def test_document_search_tool_does_not_prevent_caching():
     assert is_cacheable(_Ctx(tools_called=["buscar_documentos", "buscar_documentos"]), [])
     assert not is_cacheable(_Ctx(tools_called=["buscar_documentos", "listar_tarefas"]), [])
     assert not is_cacheable(_Ctx(tools_called=["criar_tarefa:pendente"]), [])
+
+
+async def test_clear_response_cache_removes_only_responses(fake_redis):
+    """`make eval` limpa as respostas antes de rodar (revisão final I5)."""
+    for i in range(3):
+        await fake_redis.set(f"enc:resp:{i}", "{}")
+    await fake_redis.set("enc:emb:bge:abc", "[]")
+    await fake_redis.set("arq:queue", "x")
+    assert await clear_response_cache(fake_redis) == 3
+    assert sorted(await fake_redis.keys("*")) == ["arq:queue", "enc:emb:bge:abc"]
+    assert await clear_response_cache(fake_redis) == 0

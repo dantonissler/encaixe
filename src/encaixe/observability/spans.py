@@ -34,7 +34,8 @@ def _ctx_attributes() -> dict[str, Any]:
         return {}
     attrs: dict[str, Any] = {
         "app_id": ctx.app.config.id,
-        "prompt.version": ctx.app.prompt_version,
+        "prompt.version": ctx.app.prompt_version,  # só o system.md
+        "app.version": ctx.app.app_version,  # system.md + app.yaml + schema (chave do cache)
         "principals.fingerprint": ctx.principals.fingerprint(),
     }
     if ctx.conversation_id is not None:

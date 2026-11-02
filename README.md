@@ -17,7 +17,7 @@ Plataforma de agentes de IA que roda 100% local, montada em 13 peças plugáveis
 | 7 | Structured output | Schema Pydantic por app entregue pela ferramenta de saída `responder` e garantido pela validação do Pydantic, com novas tentativas (não por gramática: ver desvios). Texto puro vale, sem citações, quando o turno não precisa delas. O cliente escolhe texto, JSON ou TOON |
 | 8 | Streaming | SSE compatível com a OpenAI, terminando sempre em `data: [DONE]`; resposta em texto puro sai frase a frase enquanto é gerada, a da ferramenta `responder` sai quando a chamada chega inteira |
 | 9 | Guardrails | Normalização, detector de injeção (heurística PT/EN; Prompt Guard 2 opcional), guard de conteúdo em camadas: ShieldGemma 2B (principal) + Llama Guard 3 1B (secundário, ignorando S1 e S6), sondado com `evals/guard_probe.py`, dados pessoais por regex com dígito verificador, canário e citações |
-| 10 | Prompt caching | System prompt estável (cache de prefixo do Ollama) + cache exato de respostas e cache de embeddings no Redis |
+| 10 | Prompt caching | System prompt estável (cache de prefixo do Ollama) + cache exato de respostas e cache de embeddings no Redis. A chave do cache exato leva a versão da app (hash de `system.md`, `app.yaml` e do schema), o modelo, os principais, o histórico, a mensagem e a versão do corpus |
 | 11 | Fallback | `qwen3.5:4b` (GPU) → `llama3.2:3b` (CPU) com circuit breaker; mensagens fixas quando tudo falha |
 | 12 | Evals | promptfoo (28 casos) + 2 casos de escrita em vários turnos, recall@5 e MRR do RAG, contagem de vazamento de ACL, baseline versionado e hook de `pre-push` |
 | 13 | Observabilidade | OpenTelemetry com convenções OpenInference → Arize Phoenix; logs JSON (structlog). Dados pessoais (CPF, CNPJ, e-mail, telefone) são mascarados nos logs e nos traces antes de saírem do processo: o exporter manda ao Phoenix só cópias dos spans com atributos, eventos e status mascarados |
@@ -183,6 +183,7 @@ make eval APP=exemplo
 ```
 
 O alvo roda, em ordem:
+0. `uv run encaixe cache clear`: apaga o cache de respostas (`enc:resp:*`) **de todas as apps nesse Redis**, para o eval medir o pipeline atual e não respostas guardadas (TTL de 1 h);
 1. `evals/multiturn.py --seed-only`: cria no adaptador MCP as tarefas usadas pelos casos de leitura;
 2. o promptfoo com `apps/<id>/evals/` (resultado em `evals/results/<id>.json`);
 3. `evals/multiturn.py`: casos de escrita em vários turnos (abre a conversa, pede a criação, responde "sim" e confere no adaptador);
@@ -191,7 +192,7 @@ O alvo roda, em ordem:
 
 `--update` no `compare_baseline.py` grava o resultado atual como baseline (recusado se houver vazamento de ACL).
 
-**Disputa de modelos:** `make bakeoff` (ou `make bakeoff MODELS="qwen3.5:4b llama3.2:3b"`) roda a mesma suíte uma vez por modelo e grava a tabela em `evals/results/bakeoff-<data>.md`. O modelo é trocado pelo header `X-Encaixe-Model`, que **a API só aceita com `ENCAIXE_ENV=dev`** (o padrão; em `prod` o header é ignorado). Modelos que não estão no Ollama são pulados; para incluir o Gemma 4, rode `docker compose exec ollama ollama pull gemma4:e4b` antes. O cache exato usa o modelo na chave: para medir latência de verdade, apague o cache de respostas antes (`docker compose exec -T redis redis-cli --scan --pattern 'enc:resp:*' | xargs -r docker compose exec -T redis redis-cli del`).
+**Disputa de modelos:** `make bakeoff` (ou `make bakeoff MODELS="qwen3.5:4b llama3.2:3b"`) roda a mesma suíte uma vez por modelo e grava a tabela em `evals/results/bakeoff-<data>.md`. O modelo é trocado pelo header `X-Encaixe-Model`, que **a API só aceita com `ENCAIXE_ENV=dev`** (o padrão; em `prod` o header é ignorado). Modelos que não estão no Ollama são pulados; para incluir o Gemma 4, rode `docker compose exec ollama ollama pull gemma4:e4b` antes. O cache exato usa o modelo na chave: para medir latência de verdade, apague o cache de respostas antes (`uv run encaixe cache clear`).
 
 **Guard de conteúdo:** `evals/guard_probe.py` mede os falsos positivos (entradas e respostas legítimas) e a taxa de bloqueio (pedidos nocivos) do conjunto `evals/guard_probes.yaml` com o próprio guard `content_safety`, e descarrega os modelos no fim:
 ```bash
@@ -239,5 +240,5 @@ Aceita respostas no formato do Llama Guard e no de Sim/Não (ShieldGemma, Granit
 - **Guard de conteúdo indisponível bloqueia** (`on_guard_unavailable: block`): se um dos dois modelos falhar (ex.: Ollama fora do ar) sem que o outro tenha bloqueado, a resposta é "O serviço está temporariamente indisponível por segurança…", antes mesmo de tentar o modelo principal.
 - O adaptador MCP de exemplo guarda as tarefas em memória: reiniciar o container apaga tudo.
 - Reenviar um documento alterado cria um documento novo ao lado do antigo; apague o antigo pela API. Reenviar os mesmos bytes com outra ACL devolve o documento existente com a ACL antiga (não há endpoint para trocar ACL).
-- O cache exato inclui o modelo na chave: repetir a disputa de modelos no mesmo corpus mede respostas em cache.
+- O cache exato inclui o modelo na chave: repetir a disputa de modelos no mesmo corpus mede respostas em cache (`uv run encaixe cache clear` antes; o `make eval` já limpa).
 - `/ready` responde 503 enquanto algum modelo de alguma app não estiver no Ollama ou enquanto houver migração pendente no banco (`postgres:schema` em `missing`: rode `make migrate`).

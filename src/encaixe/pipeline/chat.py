@@ -190,7 +190,7 @@ class ChatPipeline:
         try:
             turn.cache_key = exact_key(
                 app_id=ctx.app.config.id,
-                prompt_version=ctx.app.prompt_version,
+                app_version=ctx.app.app_version,
                 model=turn.model_spec,
                 principals=ctx.principals,
                 history=history,
