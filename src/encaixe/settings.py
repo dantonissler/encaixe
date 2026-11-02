@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,22 @@ class Settings(BaseSettings):
     reranker_model_id: str = "BAAI/bge-reranker-v2-m3"
     max_user_message_chars: int = 8000
     log_full_text: bool = True
+    # Modelos do Docling baixados com `docling-tools models download` (execução offline).
+    # Também lê DOCLING_ARTIFACTS_PATH, a variável do próprio Docling. Vazio = padrão do
+    # Docling (baixa do Hugging Face no 1º uso). Diretório inexistente também cai no padrão.
+    docling_artifacts_path: Path | None = Field(
+        default=Path.home() / ".cache" / "docling" / "models",
+        validation_alias=AliasChoices(
+            "docling_artifacts_path", "ENCAIXE_DOCLING_ARTIFACTS_PATH", "DOCLING_ARTIFACTS_PATH"
+        ),
+    )
+    # OCR desligado: os PDFs esperados têm camada de texto e os modelos de OCR não são baixados.
+    docling_ocr: bool = False
+
+    @field_validator("docling_artifacts_path", mode="before")
+    @classmethod
+    def _empty_path_is_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
 
 
 @lru_cache

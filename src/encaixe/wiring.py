@@ -144,6 +144,15 @@ async def close_deps(deps: Deps) -> None:
     await _close_quietly("postgres", deps.pool.close if deps.pool else None)
 
 
+def make_chunker(settings: Settings) -> Any:
+    """Chunker do worker com os modelos locais do Docling (offline) e o OCR conforme settings."""
+    from encaixe.rag.chunking import DoclingChunker  # import leve; o Docling carrega no 1º uso
+
+    return DoclingChunker(
+        artifacts_path=settings.docling_artifacts_path, do_ocr=settings.docling_ocr
+    )
+
+
 async def build_worker_deps(settings: Settings) -> dict:
     """Chaves do ctx do arq usadas pelos jobs (workers/ingest.py e workers/summarize.py).
 
@@ -151,8 +160,6 @@ async def build_worker_deps(settings: Settings) -> dict:
     """
     set_runtime_env()
     apps = load_apps(settings.apps_dir)
-    from encaixe.rag.chunking import DoclingChunker  # import leve; o Docling carrega no 1º uso
-
     pool = await create_pool(settings.database_url)
     embedding_redis = Redis.from_url(settings.redis_url, decode_responses=True)
     return {
@@ -161,7 +168,7 @@ async def build_worker_deps(settings: Settings) -> dict:
         "embedding_redis": embedding_redis,
         "store": PgVectorStore(pool),
         "injection": get_guard("prompt_injection", settings),
-        "chunker": DoclingChunker(),
+        "chunker": make_chunker(settings),
         "settings": settings,
         "history_store": PgHistoryStore(pool),
         "apps": apps,

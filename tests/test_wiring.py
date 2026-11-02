@@ -61,3 +61,10 @@ async def test_build_worker_deps(settings):
         assert "exemplo" in ctx["apps"]
     finally:
         await wiring.close_worker_deps(ctx)
+
+
+def test_worker_chunker_uses_docling_settings(tmp_path):
+    from encaixe.settings import Settings
+
+    chunker = wiring.make_chunker(Settings(docling_artifacts_path=tmp_path, docling_ocr=True))
+    assert chunker.artifacts_path == tmp_path and chunker.do_ocr is True
