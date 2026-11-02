@@ -50,6 +50,7 @@ def make_app(
     on_unavailable: str = "block",
     mode: str = "buffered_sentences",
     rag: bool = True,
+    require_citations: bool = True,
     native: list[str] | None = None,
     mcp: list[McpServerConfig] | None = None,
     cache: bool = True,
@@ -59,7 +60,7 @@ def make_app(
     cfg = AppConfig(
         id=app_id,
         models=ModelsConfig(primary=PRIMARY, fallbacks=fallbacks or []),
-        rag=RagConfig(enabled=rag, top_k=10, rerank_top_n=3),
+        rag=RagConfig(enabled=rag, top_k=10, rerank_top_n=3, require_citations=require_citations),
         tools=ToolsConfig(native=native or [], mcp_servers=mcp or []),
         agent=AgentConfig(timeout_s=timeout_s),
         cache=CacheConfig(exact=ExactCacheConfig(enabled=cache, ttl_s=60)),

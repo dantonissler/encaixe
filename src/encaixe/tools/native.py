@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
+from encaixe.context.aliases import alias_for
 from encaixe.context.untrusted import wrap_untrusted
 from encaixe.core.protocols import Retriever
 from encaixe.core.registry import UnknownImplementationError
@@ -40,9 +41,10 @@ async def buscar_documentos(ctx: RunContext[AgentDeps], consulta: str) -> str:
         if s.chunk.id not in known:
             known.add(s.chunk.id)
             deps.ctx.retrieved.append(s)
+    # ids curtos continuando a numeração da pré-busca (o mapa fica no RequestContext)
     payload = [
         {
-            "id": s.chunk.id,
+            "id": alias_for(deps.ctx.citation_aliases, s.chunk.id),
             "titulo": s.chunk.metadata.get("title", ""),
             "secao": " > ".join(s.chunk.heading_path),
             "texto": s.chunk.text,

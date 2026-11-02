@@ -12,6 +12,7 @@ import structlog
 
 from encaixe.agent.factory import build_agent, run_outcome_on_limit, usage_limits_for
 from encaixe.cache.exact import exact_key, is_cacheable
+from encaixe.context.aliases import resolve_citations
 from encaixe.context.builder import BuiltContext, ContextBuilder, conversation_messages
 from encaixe.context.untrusted import new_boundary
 from encaixe.core.types import ChatMessage, RequestContext
@@ -28,9 +29,9 @@ from encaixe.pipeline.stages import (
     current_trace_id,
     drive_agent,
     make_releaser,
-    may_become_not_found,
     may_write,
     model_specs,
+    not_found_reason,
     primary_model_name,
     span_attr,
     static_output,
@@ -218,7 +219,7 @@ class ChatPipeline:
 
     @traced("pipeline.context")
     def _build_context(self, ctx: RequestContext, turn: Turn) -> BuiltContext:
-        return self.builder.build(
+        built = self.builder.build(
             ctx.app,
             canary=ctx.canary,
             summary=turn.summary,
@@ -227,6 +228,9 @@ class ChatPipeline:
             extra_context=ctx.extra_context,
             user_message=ctx.user_message,
         )
+        # A ferramenta buscar_documentos continua a numeração (T3, T4…) neste mesmo mapa.
+        ctx.citation_aliases = dict(built.citation_aliases)
+        return built
 
     # --- 6. agente em streaming -------------------------------------------------------------
 
@@ -299,9 +303,11 @@ class ChatPipeline:
     @traced("pipeline.output_guards")
     async def _check_output(self, ctx: RequestContext, turn: Turn) -> list[ChatEvent]:
         assert turn.output is not None
-        if not turn.synthetic and may_become_not_found(ctx):
-            # Nada recuperado: qualquer resposta (e citação) seria inventada.
-            turn.finish_static(NOT_FOUND)
+        if not turn.synthetic:
+            self._resolve_citations(ctx, turn)
+            if (reason := not_found_reason(ctx, turn.output)) is not None:
+                span_attr("not_found", reason)
+                turn.finish_static(NOT_FOUND)
         retract = False
         if not turn.synthetic:
             g = ctx.app.config.guardrails
@@ -318,6 +324,17 @@ class ChatPipeline:
                 turn.finish_static(RETRACTION)
                 retract = True
         return turn.releaser.closing(turn.output.resposta, retract=retract)
+
+    def _resolve_citations(self, ctx: RequestContext, turn: Turn) -> None:
+        """Aliases (T1…) e variantes ("t1", "[T1]", "id: T1", UUID) → ids reais dos trechos
+        recuperados; o que não resolve sai (antes dos guards: citação ruim não é RETRACTION)."""
+        assert turn.output is not None
+        cited, dropped = resolve_citations(
+            turn.output.citacoes, ctx.citation_aliases, (s.chunk.id for s in ctx.retrieved)
+        )
+        span_attr("citations.dropped", dropped)
+        if cited != turn.output.citacoes:
+            turn.output = turn.output.model_copy(update={"citacoes": cited})
 
     # --- 8. gravação no cache (fail-open) ---------------------------------------------------
 

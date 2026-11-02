@@ -98,7 +98,11 @@ async def test_model_may_be_omitted_or_sent_as_header():
 
 
 async def test_sse_format_and_done():
-    api = make_api(script=Script(answer("Primeira frase. Segunda frase.", ["k1"])))
+    # sem require_citations: a liberação por frase não espera a checagem de citações
+    api = make_api(
+        make_app(require_citations=False),
+        Script(answer("Primeira frase. Segunda frase.", ["k1"])),
+    )
     async with api.client() as c:
         r = await c.post(CHAT, json=chat_body(stream=True))
     assert r.status_code == 200

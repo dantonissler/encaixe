@@ -90,3 +90,5 @@ class RequestContext:
     fallback_used: bool = False
     cache_layer_hit: str | None = None
     extra_context: list[str] = field(default_factory=list)
+    # alias curto mostrado ao modelo (T1, T2…) → id real do chunk (ver context/aliases.py)
+    citation_aliases: dict[str, str] = field(default_factory=dict)

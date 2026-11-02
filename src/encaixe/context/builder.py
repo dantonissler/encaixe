@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic_ai.messages import (
     ModelMessage,
@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from encaixe.context.aliases import next_alias
 from encaixe.context.untrusted import new_boundary, wrap_untrusted
 from encaixe.core.config import LoadedApp
 from encaixe.core.protocols import TokenCounter
@@ -77,6 +78,8 @@ class BuiltContext:
     user_prompt: str
     boundary: str
     token_usage: dict[str, int]
+    # alias (T1…) → id do chunk, só dos trechos que entraram no prompt
+    citation_aliases: dict[str, str] = field(default_factory=dict)
 
 
 class ContextBuilder:
@@ -127,17 +130,22 @@ class ContextBuilder:
             extra_items.append(item)
             extra_tokens += cost
 
+        # O modelo vê ids curtos (T1, T2… por relevância), não o UUID do chunk: modelos
+        # pequenos copiam UUIDs errado. O pipeline traduz as citações de volta.
         rag_items: list[dict] = []
         rag_tokens = 0
+        aliases: dict[str, str] = {}
         for sc in sorted(retrieved, key=lambda s: s.score, reverse=True):
+            alias = next_alias(aliases)
             item = {
-                "id": sc.chunk.id,
+                "id": alias,
                 "titulo": sc.chunk.metadata.get("title", ""),
                 "texto": sc.chunk.text,
             }
             cost = count(to_toon(item))
             if extra_tokens + rag_tokens + cost > budget.rag:
                 continue
+            aliases[alias] = sc.chunk.id
             rag_items.append(item)
             rag_tokens += cost
 
@@ -167,4 +175,5 @@ class ContextBuilder:
                 "rag": rag_tokens,
                 "user": count(user_text),
             },
+            citation_aliases=aliases,
         )

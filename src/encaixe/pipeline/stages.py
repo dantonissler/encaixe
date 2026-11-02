@@ -68,8 +68,29 @@ def grounded_elsewhere(ctx: RequestContext) -> bool:
 
 
 def may_become_not_found(ctx: RequestContext) -> bool:
-    """Com RAG ligado e nada recuperado, a resposta final vira NOT_FOUND."""
-    return ctx.app.config.rag.enabled and not ctx.retrieved and not grounded_elsewhere(ctx)
+    """A resposta final ainda pode virar NOT_FOUND (então nada é liberado antes do fim).
+
+    Com RAG ligado e sem outra base (`grounded_elsewhere`): nada recuperado, ou
+    `require_citations` (sem citação válida no fim, vira NOT_FOUND). Por isso apps com
+    `require_citations` ficam, na prática, em modo `strict` nos turnos de documentos; o
+    `buffered_sentences` volta a liberar por frase quando a resposta passa a se apoiar
+    numa ferramenta MCP ou numa ação aprovada.
+    """
+    rag = ctx.app.config.rag
+    if not rag.enabled or grounded_elsewhere(ctx):
+        return False
+    return not ctx.retrieved or rag.require_citations
+
+
+def not_found_reason(ctx: RequestContext, output: RespostaBase) -> str | None:
+    """Por que a resposta (com citações já resolvidas) vira NOT_FOUND, ou None."""
+    if not may_become_not_found(ctx):
+        return None
+    if not ctx.retrieved:
+        return "no_retrieval"  # qualquer resposta (e citação) seria inventada
+    if not output.citacoes:
+        return "no_valid_citation"  # require_citations: resposta sem base nos trechos
+    return None
 
 
 def may_write(ctx: RequestContext) -> bool:

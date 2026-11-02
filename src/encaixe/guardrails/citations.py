@@ -11,6 +11,13 @@ if TYPE_CHECKING:
 
 
 class CitationsGuard:
+    """Citações precisam apontar para trechos recuperados.
+
+    No pipeline, as citações já chegam resolvidas (aliases T1… → ids reais, inválidas
+    descartadas; ver `context/aliases.py`), então este guard só barra o que escapar disso.
+    Resposta sem nenhuma citação válida vira NOT_FOUND no pipeline, não bloqueio aqui.
+    """
+
     name = "citations"
 
     async def check(self, text: str, ctx: RequestContext) -> GuardResult:

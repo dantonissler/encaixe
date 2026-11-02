@@ -51,3 +51,26 @@ async def test_buscar_documentos_wraps_and_records_retrieved():
 def test_unknown_native_tool():
     with pytest.raises(UnknownImplementationError):
         build_native_toolset(["nao_existe"])
+
+
+async def test_buscar_documentos_gives_short_aliases_continuing_numbering():
+    ctx = make_ctx()
+    ctx.citation_aliases["T1"] = "c0"  # trecho da pré-busca do pipeline
+    retr = FakeRetriever()
+    deps = AgentDeps(ctx=ctx, retriever=retr, injection=None, approvals=None, boundary="B1")  # type: ignore[arg-type]
+    state = {"n": 0}
+
+    def fn(messages, info):
+        state["n"] += 1
+        if state["n"] <= 2:  # a segunda busca devolve os mesmos trechos: mesmos aliases
+            return ModelResponse(parts=[ToolCallPart("buscar_documentos", {"consulta": "q"})])
+        return ModelResponse(parts=[TextPart("ok")])
+
+    agent = Agent(FunctionModel(fn), toolsets=[build_native_toolset(["buscar_documentos"])], deps_type=AgentDeps)
+    res = await agent.run("x", deps=deps)
+    assert ctx.citation_aliases == {"T1": "c0", "T2": "c1", "T3": "c2"}
+    returns = [p.content for m in res.all_messages() for p in m.parts if p.part_kind == "tool-return"]
+    assert len(returns) == 2
+    for content in returns:
+        assert "T2" in content and "T3" in content
+        assert "c1" not in content and "c2" not in content  # o id real não vai para o modelo

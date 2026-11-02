@@ -166,3 +166,36 @@ def test_leading_assistant_orphan_dropped():
     ctx = build(history=hist)
     assert len(ctx.history) == 2
     assert isinstance(ctx.history[0], ModelRequest)
+
+
+def named_chunk(id_: str, text: str, score: float) -> ScoredChunk:
+    return ScoredChunk(Chunk(id_, "a", "d", text, (), ("app:*",), {"title": "Manual"}), score)
+
+
+def test_rag_chunks_get_short_aliases_round_trip():
+    from encaixe.context.aliases import resolve_citations
+
+    uuid_a = "aaaaaaaa-0000-4000-8000-000000000001"
+    uuid_b = "bbbbbbbb-0000-4000-8000-000000000002"
+    chunks = [
+        named_chunk(uuid_b, "segundo trecho", 0.5),
+        named_chunk(uuid_a, "primeiro trecho", 0.9),
+    ]
+    ctx = build(retrieved=chunks)
+    # por score: o mais relevante é T1
+    assert ctx.citation_aliases == {"T1": uuid_a, "T2": uuid_b}
+    up = ctx.user_prompt
+    assert uuid_a not in up and uuid_b not in up  # o modelo só vê os ids curtos
+    assert up.index("T1") < up.index("primeiro trecho") < up.index("T2") < up.index("segundo")
+    valid = {uuid_a, uuid_b}
+    assert resolve_citations(["T2", "t1"], ctx.citation_aliases, valid) == ([uuid_b, uuid_a], 0)
+
+
+def test_chunk_left_out_by_budget_gets_no_alias():
+    chunks = [named_chunk("grande", "a" * 900, 0.9), named_chunk("pequeno", "b" * 30, 0.1)]
+    ctx = build(make_app(rag=100), retrieved=chunks)
+    assert ctx.citation_aliases == {"T1": "pequeno"}
+
+
+def test_no_retrieval_no_aliases():
+    assert build().citation_aliases == {}

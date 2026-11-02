@@ -350,7 +350,7 @@ async def test_nothing_persisted_without_conversation_id():
 
 
 async def test_buffered_mode_releases_sentence_by_sentence():
-    app = make_app(output_guards=["pii_leak", "canary"])
+    app = make_app(output_guards=["pii_leak", "canary"], require_citations=False)
     h = make_harness(
         app, Script(answer("Primeira frase. Segunda frase! Terceira", ["k1"]), chunk=3)
     )
@@ -361,7 +361,7 @@ async def test_buffered_mode_releases_sentence_by_sentence():
 
 
 async def test_buffered_mode_holds_sentence_with_canary_leak():
-    app = make_app(output_guards=["canary"])
+    app = make_app(output_guards=["canary"], require_citations=False)
     h = make_harness(
         app,
         Script(answer("Tudo certo. O código é cnr-abc123def456. Fim.", ["k1"]), chunk=3),
@@ -586,7 +586,7 @@ async def test_unexpected_error_still_ends_with_final(monkeypatch):
 
 
 async def test_output_block_emits_retraction():
-    app = make_app(output_guards=["tp_block_out"])
+    app = make_app(output_guards=["tp_block_out"], require_citations=False)
     h = make_harness(app, Script(answer("Frase um. Frase dois.", ["k1"]), chunk=3))
     events = await collect(ChatPipeline(h.deps), make_ctx(app, identity=True))
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["Frase um. "]
@@ -618,11 +618,131 @@ async def test_strict_mode_block_releases_only_retraction():
     assert final_of(events).output.resposta == RETRACTION
 
 
-async def test_citation_guard_blocks_unknown_citation():
+# --- citações: ids curtos (T1…), normalização e NOT_FOUND --------------------------------------
+
+TWO_CHUNKS = [
+    chunk("k1", "Férias: 30 dias corridos."),
+    chunk("k2", "Divisão em até três períodos."),
+]
+
+
+@pytest.mark.parametrize(
+    "cites,expected",
+    [
+        (["T1"], ["k1"]),
+        (["t1"], ["k1"]),
+        (["[T2]"], ["k2"]),
+        (["id: T1"], ["k1"]),
+        (["k2"], ["k2"]),  # o id real do trecho também vale
+        (["T2", "t1", "k2"], ["k2", "k1"]),
+    ],
+)
+async def test_citation_aliases_map_to_chunk_ids(cites, expected):
     app = make_app(output_guards=["citations"])
-    h = make_harness(app, Script(answer("Segundo o manual.", ["k1", "k-falso"])))
-    events = await collect(ChatPipeline(h.deps), make_ctx(app))
-    assert final_of(events).output.resposta == RETRACTION
+    h = make_harness(
+        app, Script(answer("São 30 dias.", cites)), retriever=FakeRetriever(TWO_CHUNKS)
+    )
+    ctx = make_ctx(app)
+    events = await collect(ChatPipeline(h.deps), ctx)
+    assert ctx.citation_aliases == {"T1": "k1", "T2": "k2"}
+    prompt = h.script.prompt()
+    assert "T1" in prompt and "T2" in prompt and "k1" not in prompt and "k2" not in prompt
+    out = final_of(events).output
+    assert out.resposta == "São 30 dias." and out.citacoes == expected
+    assert not any(isinstance(e, Retraction) for e in events)
+
+
+async def test_invented_citation_is_dropped_not_retracted():
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from encaixe.observability.spans import use_tracer_provider
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    app = make_app(output_guards=["citations"])
+    cites = ["T1", "T7", "id: d135c7b6-1111-4222-8333-444455556666", "k-falso"]
+    h = make_harness(app, Script(answer("Segundo o manual.", cites)))
+    use_tracer_provider(provider)
+    try:
+        events = await collect(ChatPipeline(h.deps), make_ctx(app))
+    finally:
+        use_tracer_provider(None)
+    out = final_of(events).output
+    assert out.resposta == "Segundo o manual." and out.citacoes == ["k1"]
+    assert not any(isinstance(e, Retraction) for e in events)
+    (span,) = [
+        s for s in exporter.get_finished_spans() if s.name == "encaixe.pipeline.output_guards"
+    ]
+    assert span.attributes["citations.dropped"] == 3
+
+
+@pytest.mark.parametrize("cites", [["T9", "id: inventado"], []])
+async def test_zero_valid_citations_is_not_found_never_retraction(cites):
+    app = make_app(output_guards=["citations"])
+    h = make_harness(app, Script(answer("Acho que são 45 dias. Confie.", cites), chunk=3))
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, identity=True))
+    assert not any(isinstance(e, Retraction) for e in events)
+    assert text_of(events) == NOT_FOUND  # nada do texto sem base foi liberado antes
+    out = final_of(events).output
+    assert out.resposta == NOT_FOUND and out.citacoes == []
+    assert RETRACTION not in str(events)
+    assert h.cache.sets == []
+    assert h.history.appended[-1] == ("assistant", NOT_FOUND)
+
+
+async def test_without_require_citations_uncited_answer_stands():
+    app = make_app(output_guards=["citations"], require_citations=False)
+    h = make_harness(app, Script(answer("Oi! Como posso ajudar?", [])))
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, "oi"))
+    assert final_of(events).output.resposta == "Oi! Como posso ajudar?"
+
+
+async def test_tool_added_chunks_get_aliases():
+    app = make_app(native=["buscar_documentos"], output_guards=["citations"])
+    script = Script(
+        Call("buscar_documentos", {"consulta": "divisão"}), answer("Até três períodos.", ["T2"])
+    )
+    retriever = FakeRetriever(sequence=[[chunk("k1")], [chunk("k1"), chunk("k2", "Divisão.")]])
+    h = make_harness(app, script, retriever=retriever)
+    ctx = make_ctx(app)
+    events = await collect(ChatPipeline(h.deps), ctx)
+    # pré-busca: k1 = T1; a ferramenta reaproveita T1 e continua a numeração em T2
+    assert ctx.citation_aliases == {"T1": "k1", "T2": "k2"}
+    tool_return = next(
+        p.content
+        for m in h.script.messages[1]
+        for p in getattr(m, "parts", [])
+        if getattr(p, "part_kind", "") == "tool-return"
+    )
+    assert "T1" in tool_return and "T2" in tool_return and "k2" not in tool_return
+    out = final_of(events).output
+    assert out.resposta == "Até três períodos." and out.citacoes == ["k2"]
+
+
+async def test_require_citations_holds_release_until_final_output():
+    LIVE_EVENTS.clear()
+    SEEN_AT_OUTPUT_CHECK.clear()
+    app = make_app(output_guards=["tp_spy_out"])  # buffered_sentences + RAG + require_citations
+    h = make_harness(app, Script(answer("Frase um. Frase dois. Frase três.", ["T1"]), chunk=3))
+    await collect(ChatPipeline(h.deps), make_ctx(app), sink=LIVE_EVENTS)
+    assert len(SEEN_AT_OUTPUT_CHECK) == 1
+    assert not any(isinstance(e, TextDelta) for e in SEEN_AT_OUTPUT_CHECK[0])
+    deltas = [e.text for e in LIVE_EVENTS if isinstance(e, TextDelta)]
+    assert deltas == ["Frase um. Frase dois. Frase três."]
+
+
+async def test_answer_grounded_on_mcp_tool_needs_no_citation():
+    server, mcp = tarefas_server()
+    app = make_app(mcp=mcp, output_guards=["citations"], cache=False)
+    script = Script(Call("listar_tarefas", {}), answer("Você não tem tarefas.", []))
+    h = make_harness(app, script, mcp_source=lambda cfg, headers: server)
+    ctx = make_ctx(app, "quais são minhas tarefas?")
+    events = await collect(ChatPipeline(h.deps), ctx)
+    assert ctx.tools_called == ["listar_tarefas"]
+    assert final_of(events).output.resposta == "Você não tem tarefas."
 
 
 async def test_closing_stream_early_cancels_agent():
