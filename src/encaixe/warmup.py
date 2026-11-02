@@ -3,7 +3,7 @@
 Sem isso a 1ª pergunta depois de subir a API e o Ollama levava ~25 s (reranker 11,5 s, Qwen
 7,4 s, Llama Guard 3,5 s, bge-m3 1,8 s; D4 da Task 15). Carrega no processo o reranker (e o
 classificador de injeção, se o backend `model` estiver em uso) e manda uma requisição mínima
-a cada modelo do Ollama que alguma app usa: o principal, o guard de conteúdo e o embedder.
+a cada modelo do Ollama que alguma app usa: o principal, os guards de conteúdo e o embedder.
 O reserva fica de fora (custa ~2,5 GiB de RAM). Nunca derruba a partida: falha vira log.
 """
 
@@ -55,6 +55,8 @@ def plan_warmup(settings: Settings, apps: Mapping[str, LoadedApp]) -> WarmupPlan
         guards = {*cfg.guardrails.input, *cfg.guardrails.output}
         if "content_safety" in guards:
             chat.append(settings.safety_model)
+            if settings.safety_secondary_model:
+                chat.append(settings.safety_secondary_model)
         if cfg.rag.enabled:
             plan.reranker = True
             plan.embed_models = [settings.embedding_model]

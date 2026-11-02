@@ -17,6 +17,7 @@ TAGS = {
         {"name": "qwen3.5:4b", "model": "qwen3.5:4b"},
         {"name": "llama3.2-3b-cpu:latest", "model": "llama3.2-3b-cpu:latest"},
         {"name": "llama-guard3-1b-cpu:latest", "model": "llama-guard3-1b-cpu:latest"},
+        {"name": "shieldgemma-2b-cpu:latest", "model": "shieldgemma-2b-cpu:latest"},
         {"name": "bge-m3-cpu:latest", "model": "bge-m3-cpu:latest"},
     ]
 }
@@ -127,3 +128,13 @@ async def test_ready_503_when_ollama_and_postgres_are_down():
             r = await c.get("/ready")
     assert r.status_code == 503
     assert r.json()["missing"] == ["postgres", "ollama"]
+
+
+async def test_ready_requires_both_content_guards():
+    api = ready_api()
+    tags = {"models": [m for m in TAGS["models"] if not m["name"].startswith("shieldgemma")]}
+    with respx.mock(base_url=OLLAMA) as mock:
+        mock.get("/api/tags").respond(json=tags)
+        async with api.client(key=None) as c:
+            r = await c.get("/ready")
+    assert r.status_code == 503 and r.json()["missing"] == ["ollama:shieldgemma-2b-cpu"]

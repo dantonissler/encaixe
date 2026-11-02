@@ -1,84 +1,81 @@
 """Sondagem do guard de conteúdo com `evals/guard_probes.yaml` (D2 da Task 15).
 
-Mede, para um modelo do Ollama, os falsos positivos nas entradas e saídas legítimas e a taxa
-de bloqueio dos pedidos nocivos, com o mesmo formato de chamada do guard `content_safety`:
-entrada = só a mensagem do usuário; saída = par usuário/assistente.
+Mede os falsos positivos nas entradas e saídas legítimas e a taxa de bloqueio dos pedidos
+nocivos usando o próprio guard `content_safety` (`encaixe.guardrails.safety`): entrada = só a
+mensagem do usuário; saída = par usuário/assistente.
 
-    uv run python evals/guard_probe.py --model llama-guard3-1b-cpu --repeats 3
+    # configuração em camadas (a padrão da API)
+    uv run python evals/guard_probe.py --model shieldgemma-2b-cpu \\
+        --secondary llama-guard3-1b-cpu --ignore S1,S6
+    # um modelo sozinho (todo veredito conta)
+    uv run python evals/guard_probe.py --model llama-guard3-1b-cpu
 
-Respostas aceitas: Llama Guard ("safe"/"unsafe\\nS1") e ShieldGemma/Granite Guardian
-("Yes" = viola a política, "No" = não viola). Ao fim o modelo é descarregado do Ollama
-(`keep_alive: 0`), porque a RAM da máquina de desenvolvimento é curta.
-
-Ambiente: ENCAIXE_OLLAMA_BASE_URL (http://localhost:11434).
+Ao fim (mesmo com erro) os modelos são descarregados do Ollama (`keep_alive: 0`), porque a
+RAM da máquina de desenvolvimento é curta. Ambiente: ENCAIXE_OLLAMA_BASE_URL
+(http://localhost:11434).
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 import yaml
 
+from encaixe.guardrails.safety import ContentSafetyGuard
+from encaixe.settings import Settings
+
 ROOT = Path(__file__).resolve().parents[1]
 PROBES = ROOT / "evals" / "guard_probes.yaml"
 
 
-def parse_verdict(content: str) -> str:
-    """'block', 'pass' ou 'unknown' a partir da 1ª palavra da resposta do modelo."""
-    words = content.strip().split()
-    first = words[0].strip(".,:;!").lower() if words else ""
-    if first in ("unsafe", "yes"):
-        return "block"
-    if first in ("safe", "no"):
-        return "pass"
-    return "unknown"
+def build_guard(base: str, model: str, secondary: str, ignore: list[str]) -> ContentSafetyGuard:
+    settings = Settings(
+        _env_file=None,
+        ollama_base_url=base,
+        safety_model=model,
+        safety_secondary_model=secondary,
+        safety_secondary_ignore_categories=ignore,
+    )
+    return ContentSafetyGuard(settings, client=httpx.AsyncClient(timeout=120.0))
 
 
-def ask(client: httpx.Client, base: str, model: str, messages: list[dict[str, str]]) -> str:
-    # Só o veredito (1ª palavra) importa; o ShieldGemma explicaria "passo a passo" sem limite.
-    body = {"model": model, "messages": messages, "stream": False, "options": {"num_predict": 10}}
-    resp = client.post(f"{base}/api/chat", json=body)
-    resp.raise_for_status()
-    return str(resp.json()["message"]["content"])
-
-
-def run(model: str, repeats: int, base: str, probes: dict[str, Any]) -> dict[str, Any]:
-    cases: list[tuple[str, str, list[dict[str, str]], str]] = []
+async def run(guard: Any, probes: dict[str, Any], repeats: int) -> dict[str, Any]:
+    cases: list[tuple[str, str, Callable[[], Awaitable[Any]], str]] = []
     for text in probes["entrada_legitima"]:
-        cases.append(("entrada_legitima", text, [{"role": "user", "content": text}], "pass"))
+        cases.append(("entrada_legitima", text, lambda t=text: guard.check(t, None), "pass"))
     for pair in probes["saida_legitima"]:
-        messages = [
-            {"role": "user", "content": pair["usuario"]},
-            {"role": "assistant", "content": pair["resposta"]},
-        ]
-        cases.append(("saida_legitima", pair["resposta"], messages, "pass"))
+        u, a = pair["usuario"], pair["resposta"]
+        cases.append(("saida_legitima", a, lambda u=u, a=a: guard.check_output_pair(u, a), "pass"))
     for text in probes["nociva"]:
-        cases.append(("nociva", text, [{"role": "user", "content": text}], "block"))
+        cases.append(("nociva", text, lambda t=text: guard.check(t, None), "block"))
 
     rows: list[dict[str, Any]] = []
     latencies: list[float] = []
-    with httpx.Client(timeout=120.0) as client:
-        ask(client, base, model, [{"role": "user", "content": "oi"}])  # carga fora da medição
-        for group, text, messages, expected in cases:
-            verdicts, raw = [], []
-            for _ in range(repeats):
-                t0 = time.perf_counter()
-                content = ask(client, base, model, messages)
-                latencies.append(time.perf_counter() - t0)
-                verdicts.append(parse_verdict(content))
-                raw.append(content.strip()[:40])
-            wrong = sum(v != expected for v in verdicts)
-            rows.append(
-                {"grupo": group, "texto": text, "esperado": expected, "erros": wrong, "raw": raw}
-            )
-        client.post(f"{base}/api/generate", json={"model": model, "keep_alive": 0})
+    for group, text, call, expected in cases:
+        verdicts, raw = [], []
+        for _ in range(repeats):
+            started = time.perf_counter()
+            try:
+                result = await call()
+                verdicts.append(result.verdict)
+                raw.append(result.reason or result.verdict)
+            except Exception as exc:  # noqa: BLE001 - conta como erro, a sondagem segue
+                verdicts.append("unavailable")
+                raw.append(f"indisponível: {type(exc).__name__}")
+            latencies.append(time.perf_counter() - started)
+        wrong = sum(v != expected for v in verdicts)
+        rows.append(
+            {"grupo": group, "texto": text, "esperado": expected, "erros": wrong, "raw": raw}
+        )
 
     def summary(group: str) -> dict[str, int]:
         items = [r for r in rows if r["grupo"] == group]
@@ -91,7 +88,6 @@ def run(model: str, repeats: int, base: str, probes: dict[str, Any]) -> dict[str
 
     latencies.sort()
     return {
-        "modelo": model,
         "repeticoes": repeats,
         "entrada_legitima": summary("entrada_legitima"),
         "saida_legitima": summary("saida_legitima"),
@@ -101,22 +97,59 @@ def run(model: str, repeats: int, base: str, probes: dict[str, Any]) -> dict[str
     }
 
 
+async def probe(
+    guard: Any,
+    probes: dict[str, Any],
+    repeats: int,
+    *,
+    unload: Callable[[list[str]], Awaitable[None]],
+) -> dict[str, Any]:
+    """Carrega os modelos fora da medição, mede e descarrega sempre (RAM curta)."""
+    try:
+        await guard.check("oi", None)
+        return await run(guard, probes, repeats)
+    finally:
+        await unload(guard.models())
+
+
+def ollama_unloader(base: str) -> Callable[[list[str]], Awaitable[None]]:
+    async def unload(models: list[str]) -> None:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for model in models:
+                try:
+                    await client.post(
+                        f"{base}/api/generate", json={"model": model, "keep_alive": 0}
+                    )
+                except httpx.HTTPError:
+                    print(f"aviso: não consegui descarregar {model}", file=sys.stderr)
+
+    return unload
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model", required=True, help="guard principal (todo veredito conta)")
+    parser.add_argument("--secondary", default="", help="guard secundário (vazio: nenhum)")
+    parser.add_argument("--ignore", default="S1,S6", help="categorias ignoradas no secundário")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--probes", type=Path, default=PROBES)
     parser.add_argument("--out", type=Path, help="grava o resultado completo em JSON")
     args = parser.parse_args()
     base = os.environ.get("ENCAIXE_OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    ignore = [c.strip() for c in args.ignore.split(",") if c.strip()]
     probes = yaml.safe_load(args.probes.read_text(encoding="utf-8"))
-    result = run(args.model, args.repeats, base, probes)
+    guard = build_guard(base, args.model, args.secondary, ignore)
+    result = asyncio.run(probe(guard, probes, args.repeats, unload=ollama_unloader(base)))
+    label = args.model + (
+        f" + {args.secondary} (ignora {','.join(ignore)})" if args.secondary else ""
+    )
+    result["configuracao"] = label
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     fp_in, fp_out, harm = result["entrada_legitima"], result["saida_legitima"], result["nociva"]
     print(
-        f"{args.model}: falsos positivos entrada {fp_in['erros']}/{fp_in['chamadas']} "
+        f"{label}: falsos positivos entrada {fp_in['erros']}/{fp_in['chamadas']} "
         f"({fp_in['casos_com_erro']}/{fp_in['casos']} casos), saída {fp_out['erros']}/"
         f"{fp_out['chamadas']} ({fp_out['casos_com_erro']}/{fp_out['casos']} casos); "
         f"nocivos bloqueados {harm['chamadas'] - harm['erros']}/{harm['chamadas']} "
@@ -125,9 +158,8 @@ def main() -> int:
     )
     for row in result["linhas"]:
         if row["erros"]:
-            print(
-                f"  [{row['grupo']}] {row['erros']}/{args.repeats} {row['texto'][:70]!r} {row['raw']}"
-            )
+            text = row["texto"][:70]
+            print(f"  [{row['grupo']}] {row['erros']}/{args.repeats} {text!r} {row['raw']}")
     return 0
 
 

@@ -26,14 +26,16 @@ async def health() -> dict[str, str]:
 
 
 def required_models(deps: Deps) -> list[str]:
-    """Modelos Ollama da config: os das apps (principal e reservas), o guard e o embedder."""
-    names = [deps.settings.safety_model, deps.settings.embedding_model]
+    """Modelos Ollama da config: os das apps (principal e reservas), os guards de conteúdo
+    (principal e secundário, se ligado) e o embedder."""
+    s = deps.settings
+    names = [s.safety_model, s.safety_secondary_model, s.embedding_model]
     for app in deps.apps.values():
         for spec in (app.config.models.primary, *app.config.models.fallbacks):
             provider, sep, name = spec.partition(":")
             if provider == "ollama" and sep and name:
                 names.append(name)
-    return list(dict.fromkeys(names))
+    return list(dict.fromkeys(n for n in names if n))
 
 
 def _canonical(name: str) -> str:

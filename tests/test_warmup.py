@@ -48,14 +48,14 @@ def make_app(
 
 
 def settings(**kw) -> Settings:
-    return Settings(ollama_base_url=BASE, **kw)
+    return Settings(_env_file=None, ollama_base_url=BASE, **kw)
 
 
 def test_plan_covers_primary_guard_embedder_and_reranker_not_fallbacks():
     app = make_app(fallbacks=["ollama:llama3.2-3b-cpu"])
     plan = plan_warmup(settings(), {"a": app})
     # o reserva fica de fora: carregá-lo custa ~2,5 GiB de RAM (D5)
-    assert plan.chat_models == ["qwen3.5:4b", "llama-guard3-1b-cpu"]
+    assert plan.chat_models == ["qwen3.5:4b", "shieldgemma-2b-cpu", "llama-guard3-1b-cpu"]
     assert plan.embed_models == ["bge-m3-cpu"]
     assert plan.reranker is True
     assert plan.injection_model is False  # backend heurístico (padrão)
@@ -73,10 +73,15 @@ def test_plan_loads_injection_model_only_with_model_backend_in_use():
     assert plan_warmup(settings(injection_backend="model"), {"a": app}).injection_model is True
 
 
+def test_plan_without_secondary_guard():
+    plan = plan_warmup(settings(safety_secondary_model=""), {"a": make_app()})
+    assert plan.chat_models == ["qwen3.5:4b", "shieldgemma-2b-cpu"]
+
+
 def test_plan_dedupes_models_across_apps():
     apps = {"a": make_app("a"), "b": make_app("b", input_guards=["content_safety"])}
     plan = plan_warmup(settings(), apps)
-    assert plan.chat_models == ["qwen3.5:4b", "llama-guard3-1b-cpu"]
+    assert plan.chat_models == ["qwen3.5:4b", "shieldgemma-2b-cpu", "llama-guard3-1b-cpu"]
 
 
 class FakeDeps:
@@ -112,12 +117,13 @@ async def test_warm_up_sends_one_tiny_request_per_model_and_loads_reranker():
     assert results == {
         "reranker": "ok",
         "ollama:qwen3.5:4b": "ok",
+        "ollama:shieldgemma-2b-cpu": "ok",
         "ollama:llama-guard3-1b-cpu": "ok",
         "ollama:bge-m3-cpu": "ok",
     }
     assert reranker.calls == 1
     sent = [json.loads(c.request.content) for c in chat.calls]
-    assert [b["model"] for b in sent] == ["qwen3.5:4b", "llama-guard3-1b-cpu"]
+    assert [b["model"] for b in sent] == ["qwen3.5:4b", "shieldgemma-2b-cpu", "llama-guard3-1b-cpu"]
     assert all(b["options"]["num_predict"] == 1 and b["stream"] is False for b in sent)
     assert json.loads(embed.calls[0].request.content)["model"] == "bge-m3-cpu"
 
@@ -136,6 +142,7 @@ async def test_ollama_down_does_not_fail_startup_and_is_logged():
     failed = [e for e in logs if e["event"] == "warmup_failed"]
     assert {e["component"] for e in failed} == {
         "ollama:qwen3.5:4b",
+        "ollama:shieldgemma-2b-cpu",
         "ollama:llama-guard3-1b-cpu",
         "ollama:bge-m3-cpu",
     }

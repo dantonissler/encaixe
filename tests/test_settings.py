@@ -39,3 +39,29 @@ def test_docling_artifacts_path_empty_means_none(monkeypatch):
     monkeypatch.setenv("ENCAIXE_DOCLING_ARTIFACTS_PATH", "")
     assert Settings(_env_file=None).docling_artifacts_path is None
     assert Settings(_env_file=None, docling_artifacts_path=None).docling_artifacts_path is None
+
+
+def test_content_safety_defaults(monkeypatch):
+    for name in (
+        "ENCAIXE_SAFETY_MODEL",
+        "ENCAIXE_SAFETY_SECONDARY_MODEL",
+        "ENCAIXE_SAFETY_SECONDARY_IGNORE_CATEGORIES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    s = Settings(_env_file=None)
+    assert s.safety_model == "shieldgemma-2b-cpu"
+    assert s.safety_secondary_model == "llama-guard3-1b-cpu"
+    assert s.safety_secondary_ignore_categories == ["S1", "S6"]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("S1,S6,S11", ["S1", "S6", "S11"]), ('["S2"]', ["S2"]), (" S1 , S6 ", ["S1", "S6"]), ("", [])],
+)
+def test_content_safety_from_env(monkeypatch, raw, expected):
+    monkeypatch.setenv("ENCAIXE_SAFETY_MODEL", "outro-guard")
+    monkeypatch.setenv("ENCAIXE_SAFETY_SECONDARY_MODEL", "")  # vazio desliga o secundário
+    monkeypatch.setenv("ENCAIXE_SAFETY_SECONDARY_IGNORE_CATEGORIES", raw)
+    s = Settings(_env_file=None)
+    assert s.safety_model == "outro-guard" and s.safety_secondary_model == ""
+    assert s.safety_secondary_ignore_categories == expected
