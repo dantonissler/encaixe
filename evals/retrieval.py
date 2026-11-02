@@ -35,6 +35,30 @@ def mrr(expected: set[str], got: list[str]) -> float:
     return 0.0
 
 
+class AclControlError(Exception):
+    """O controle positivo da checagem de ACL falhou (a rodada não vale)."""
+
+    def __init__(self, problems: list[str]) -> None:
+        super().__init__("; ".join(problems))
+        self.problems = problems
+
+
+def acl_control_problems(
+    cases: list[dict[str, Any]], statuses_by_title: dict[str, set[str]]
+) -> list[str]:
+    """Controle positivo da ACL: todo documento proibido nos casos precisa existir e estar
+    `indexed`. Sem isso, perder o documento restrito deixa `acl_leaks` em 0 (nada a vazar) e
+    a queda de recall/MRR fica abaixo do limite: a checagem passaria sem provar nada."""
+    problems = []
+    for title in sorted({t for c in cases for t in c["forbidden_docs"]}):
+        statuses = statuses_by_title.get(title)
+        if not statuses:
+            problems.append(f"{title}: não existe")
+        elif "indexed" not in statuses:
+            problems.append(f"{title}: status {', '.join(sorted(statuses))} (esperado indexed)")
+    return problems
+
+
 def count_leaks(forbidden: set[str], got: list[str]) -> int:
     """Quantos documentos proibidos (ACL) apareceram na recuperação."""
     return len(forbidden & set(got))
@@ -95,9 +119,14 @@ async def _run(app_id: str, k: int) -> dict[str, Any]:
     try:
         async with app_scope(pool, app_id, None, system=True) as conn:
             rows = await conn.fetch(
-                "SELECT id::text, title FROM documents WHERE app_id = $1", app_id
+                "SELECT id::text, title, status FROM documents WHERE app_id = $1", app_id
             )
         title_by_id = {r["id"]: r["title"] for r in rows}
+        statuses_by_title: dict[str, set[str]] = {}
+        for r in rows:
+            statuses_by_title.setdefault(r["title"], set()).add(r["status"])
+        if problems := acl_control_problems(cases, statuses_by_title):
+            raise AclControlError(problems)
         retriever = HybridRetriever(
             embedder, PgVectorStore(pool), CrossEncoderReranker(settings.reranker_model_id)
         )
@@ -136,7 +165,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app", required=True)
     parser.add_argument("--k", type=int, default=5)
     args = parser.parse_args(argv)
-    result = asyncio.run(_run(args.app, args.k))
+    try:
+        result = asyncio.run(_run(args.app, args.k))
+    except AclControlError as exc:
+        hint = f"rode `uv run encaixe seed --app {args.app}`"
+        problems = "; ".join(exc.problems)
+        print(f"{args.app}: controle positivo da ACL falhou ({hint}): {problems}", file=sys.stderr)
+        return 1
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / f"{args.app}-retrieval.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
