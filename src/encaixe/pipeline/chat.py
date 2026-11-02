@@ -198,6 +198,7 @@ class ChatPipeline:
         span_attr("cache.hit", output is not None)
         if output is not None:
             ctx.cache_layer_hit = "exact"
+            span_attr("cache.layer_hit", "exact")  # atributo do spec §6.13
         return output
 
     # --- 4. retrieval -----------------------------------------------------------------------
