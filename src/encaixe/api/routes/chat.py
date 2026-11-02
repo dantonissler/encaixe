@@ -18,13 +18,20 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from encaixe.api.auth import get_deps, require_app, resolve_app
 from encaixe.api.errors import RETRY_AFTER, ApiError, service_unavailable
 from encaixe.api.identity import resolve_identity, verify_conversation_owner
-from encaixe.api.sse import DONE, ChunkEncoder, OutputFormat, final_extension, render_output
+from encaixe.api.sse import (
+    DONE,
+    ChunkEncoder,
+    ClosingStreamingResponse,
+    OutputFormat,
+    final_extension,
+    render_output,
+)
 from encaixe.core.config import LoadedApp
 from encaixe.core.types import ChatMessage, RequestContext
 from encaixe.messages import ALL_FAILED, QUEUE_WAIT
@@ -157,7 +164,7 @@ async def chat_completions(
 
     if body.stream:
         encoder = ChunkEncoder(completion_id, app_id, created, fmt)
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             _sse(pipeline, ctx, gate, encoder, trace_id),
             media_type="text/event-stream",
             headers={**headers, "Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -210,8 +217,9 @@ async def _sse(
     encoder: ChunkEncoder,
     trace_id: str,
 ) -> AsyncIterator[bytes]:
-    """Corpo SSE. Se o cliente desconectar, o Starlette cancela este gerador: o pipeline é
-    fechado (cancelando o agente) e o `finally` do `slot()` devolve a vaga."""
+    """Corpo SSE. Se o cliente desconectar, o Starlette cancela este gerador (ou, se o
+    cancelamento pegar o envio parado no `send`, o `ClosingStreamingResponse` o fecha): o
+    pipeline é fechado (cancelando o agente) e o `finally` do `slot()` devolve a vaga."""
     started, completed = time.monotonic(), False
     try:
         yield encoder.start()

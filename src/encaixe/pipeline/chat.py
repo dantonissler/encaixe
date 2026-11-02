@@ -29,6 +29,7 @@ from encaixe.pipeline.stages import (
     drive_agent,
     make_releaser,
     may_become_not_found,
+    may_write,
     model_specs,
     primary_model_name,
     span_attr,
@@ -133,7 +134,7 @@ class ChatPipeline:
 
     @traced("pipeline.approvals")
     async def _resolve_approval(self, ctx: RequestContext) -> None:
-        if not (ctx.has_conversation_identity and ctx.conversation_id):
+        if not may_write(ctx):  # mesma regra das ferramentas de escrita
             return
         try:
             result = await self.deps.approvals.resolve_turn(ctx, new_boundary())

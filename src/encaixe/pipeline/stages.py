@@ -72,6 +72,17 @@ def may_become_not_found(ctx: RequestContext) -> bool:
     return ctx.app.config.rag.enabled and not ctx.retrieved and not grounded_elsewhere(ctx)
 
 
+def may_write(ctx: RequestContext) -> bool:
+    """Ferramentas de escrita e resolução de aprovações: só numa conversa com identidade de
+    servidor e de um usuário identificado. Sem `user_ref`, quem repete o `X-Conversation-Id`
+    recebido (cliente anônimo) não ganha escrita."""
+    return (
+        ctx.has_conversation_identity
+        and ctx.conversation_id is not None
+        and ctx.principals.user_ref is not None
+    )
+
+
 def primary_model_name(model: Model) -> str:
     inner = model.models[0] if isinstance(model, FallbackModel) else model
     return inner.model_name
@@ -164,13 +175,12 @@ def model_specs(ctx: RequestContext, settings: Settings) -> tuple[str, list[str]
 
 
 def build_toolsets(ctx: RequestContext, mcp_source: Any = None) -> list[AbstractToolset[Any]]:
-    """Nativas + MCP (escrita só com identidade de conversa), cada uma com um LoopGuard novo."""
+    """Nativas + MCP (escrita só com `may_write`), cada uma com um LoopGuard novo."""
     tools = ctx.app.config.tools
-    allow_write = ctx.has_conversation_identity and ctx.conversation_id is not None
     toolsets: list[AbstractToolset[Any]] = []
     if tools.native:
         toolsets.append(build_native_toolset(tools.native))
-    mcp = build_mcp_toolsets(ctx.app, ctx, allow_write=allow_write, source=mcp_source)
+    mcp = build_mcp_toolsets(ctx.app, ctx, allow_write=may_write(ctx), source=mcp_source)
     toolsets += [TolerantToolset(ts, s.name) for ts, s in zip(mcp, tools.mcp_servers, strict=True)]
     return wrap_toolsets(toolsets)
 

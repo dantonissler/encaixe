@@ -18,6 +18,10 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+import structlog
+from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
+
 from encaixe.output.schemas import RespostaBase
 from encaixe.output.toon import to_toon
 from encaixe.pipeline.events import ChatEvent, Final, Retraction, Status, TextDelta
@@ -26,6 +30,30 @@ from encaixe.pipeline.stages import static_output
 OutputFormat = Literal["text", "json", "toon"]
 
 DONE = b"data: [DONE]\n\n"
+
+log = structlog.get_logger(__name__)
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """`StreamingResponse` que sempre fecha o gerador do corpo (`aclose`) ao terminar.
+
+    O Starlette nunca chama `aclose()` no `body_iterator`. Se a desconexão cancela o envio
+    enquanto ele espera no `send`, o gerador fica suspenso no `yield` — ainda dentro de
+    `gate.slot()` — até a coleta de lixo; com uma vaga só, o bot fica preso até lá. Aqui o
+    `finally` fecha o gerador na hora (fora do escopo já cancelado), o que roda os `finally`
+    dele: o pipeline cancela o agente e a vaga volta.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception as exc:  # noqa: BLE001 - não mascara o erro original
+                    log.warning("sse_body_close_failed", error=type(exc).__name__)
 
 
 def sse_data(payload: dict[str, Any]) -> bytes:

@@ -10,7 +10,7 @@ from pydantic_ai.models.fallback import FallbackModel
 
 from encaixe.core.config import McpServerConfig
 from encaixe.core.registry import register
-from encaixe.core.types import ChatMessage, GuardResult
+from encaixe.core.types import ChatMessage, GuardResult, Principals
 from encaixe.llm.breaker import BreakerRegistry
 from encaixe.llm.fallback import build_chain
 from encaixe.messages import (
@@ -156,7 +156,7 @@ async def test_persists_masked_user_message_when_pii():
 async def test_approval_result_goes_to_extra_context_with_identity():
     app = make_app()
     h = make_harness(app, approvals=FakeApprovals("RESULTADO-DA-ACAO"))
-    ctx = make_ctx(app, "sim", identity=True, conversation_id="c1")
+    ctx = make_ctx(app, "sim", identity=True, conversation_id="c1", principals=Principals("ana"))
     await collect(ChatPipeline(h.deps), ctx)
     assert len(h.approvals.calls) == 1 and h.approvals.calls[0].startswith("DADOS-")
     assert ctx.extra_context == ["RESULTADO-DA-ACAO"]
@@ -164,11 +164,25 @@ async def test_approval_result_goes_to_extra_context_with_identity():
     assert h.cache.gets == 0 and h.cache.sets == []  # resposta depende da ação: sem cache
 
 
-@pytest.mark.parametrize("identity,conversation_id", [(False, "c1"), (True, None)])
-async def test_approval_not_resolved_without_identity(identity, conversation_id):
+@pytest.mark.parametrize(
+    "identity,conversation_id,user_ref",
+    [
+        (False, "c1", "ana"),
+        (True, None, "ana"),
+        # conversa anônima continuada pelo id: quem repete o X-Conversation-Id não é um usuário
+        (True, "c1", None),
+    ],
+)
+async def test_approval_not_resolved_without_identity(identity, conversation_id, user_ref):
     app = make_app()
     h = make_harness(app, approvals=FakeApprovals("RESULTADO-DA-ACAO"))
-    ctx = make_ctx(app, "sim", identity=identity, conversation_id=conversation_id)
+    ctx = make_ctx(
+        app,
+        "sim",
+        identity=identity,
+        conversation_id=conversation_id,
+        principals=Principals(user_ref),
+    )
     await collect(ChatPipeline(h.deps), ctx)
     assert h.approvals.calls == []
     assert ctx.extra_context == []
@@ -197,8 +211,6 @@ async def test_cache_hit_skips_agent():
 
 
 async def test_cache_key_uses_override_model_and_principals():
-    from encaixe.core.types import Principals
-
     app = make_app(rag=False)
     h = make_harness(app, Script(answer("Ok.", [])))
     pipeline = ChatPipeline(h.deps)
@@ -387,7 +399,7 @@ async def test_loop_detected_returns_limit_message():
     assert text_of(events) == out.resposta
 
 
-async def test_write_tools_absent_without_identity():
+def tarefas_server() -> tuple[FastMCP, list[McpServerConfig]]:
     server = FastMCP("tarefas")
 
     @server.tool
@@ -408,15 +420,41 @@ async def test_write_tools_absent_without_identity():
             require_approval=["criar_tarefa"],
         )
     ]
+    return server, mcp
+
+
+async def test_write_tools_absent_without_identity():
+    server, mcp = tarefas_server()
     app = make_app(native=["buscar_documentos"], mcp=mcp, rag=False, cache=False)
     h = make_harness(app, mcp_source=lambda cfg, headers: server)
     pipeline = ChatPipeline(h.deps)
-    await collect(pipeline, make_ctx(app, identity=False))
-    await collect(pipeline, make_ctx(app, identity=True, conversation_id=None))
-    await collect(pipeline, make_ctx(app, identity=True, conversation_id="c1"))
+    ana = Principals("ana")
+    await collect(pipeline, make_ctx(app, identity=False, principals=ana))
+    await collect(pipeline, make_ctx(app, identity=True, conversation_id=None, principals=ana))
+    await collect(pipeline, make_ctx(app, identity=True, conversation_id="c1", principals=ana))
     assert h.script.tool_names(0) == {"buscar_documentos", "listar_tarefas"}
     assert h.script.tool_names(1) == {"buscar_documentos", "listar_tarefas"}
     assert h.script.tool_names(2) == {"buscar_documentos", "listar_tarefas", "criar_tarefa"}
+
+
+async def test_anonymous_conversation_continued_by_id_gets_no_write_tools():
+    """Sem user_ref, repetir o X-Conversation-Id recebido não dá ferramentas de escrita."""
+    server, mcp = tarefas_server()
+    app = make_app(native=["buscar_documentos"], mcp=mcp, rag=False, cache=False)
+    h = make_harness(
+        app, approvals=FakeApprovals("RESULTADO"), mcp_source=lambda cfg, headers: server
+    )
+    pipeline = ChatPipeline(h.deps)
+    anonymous = make_ctx(app, identity=True, conversation_id="c1", principals=Principals(None))
+    await collect(pipeline, anonymous)
+    assert h.script.tool_names(0) == {"buscar_documentos", "listar_tarefas"}
+    assert h.approvals.calls == [] and anonymous.extra_context == []
+    group_only = Principals(None, ("rh",))  # grupo sem usuário também não é identidade
+    await collect(
+        pipeline, make_ctx(app, identity=True, conversation_id="c1", principals=group_only)
+    )
+    assert h.script.tool_names(1) == {"buscar_documentos", "listar_tarefas"}
+    assert h.approvals.calls == []
 
 
 async def test_mcp_server_down_degrades_to_no_mcp_tools():

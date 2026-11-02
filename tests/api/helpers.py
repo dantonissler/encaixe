@@ -197,6 +197,7 @@ class AsgiCall:
     sent: list[dict]
     disconnect: asyncio.Event
     task: asyncio.Task
+    held: asyncio.Event  # `send` ficou preso (ver `hold_send` em `start_asgi`)
 
     def body(self) -> str:
         return b"".join(
@@ -204,11 +205,21 @@ class AsgiCall:
         ).decode()
 
 
-def start_asgi(app: FastAPI, path: str, payload: dict, headers: dict[str, str]) -> AsgiCall:
+def start_asgi(
+    app: FastAPI,
+    path: str,
+    payload: dict,
+    headers: dict[str, str],
+    *,
+    hold_send: Callable[[dict], bool] | None = None,
+) -> AsgiCall:
     """Chama o app como o uvicorn faz (ASGI spec 2.3): o `receive` entrega o corpo e depois
-    só devolve `http.disconnect` quando o teste mandar."""
+    só devolve `http.disconnect` quando o teste mandar. Com `hold_send`, o primeiro `send` cuja
+    mensagem satisfaz o predicado fica preso para sempre (socket lento): o cancelamento pela
+    desconexão chega com o app parado dentro do `send`."""
     body = json.dumps(payload).encode()
     disconnect = asyncio.Event()
+    held = asyncio.Event()
     delivered = False
     sent: list[dict] = []
 
@@ -222,6 +233,9 @@ def start_asgi(app: FastAPI, path: str, payload: dict, headers: dict[str, str]) 
 
     async def send(message: dict) -> None:
         sent.append(message)
+        if hold_send is not None and not held.is_set() and hold_send(message):
+            held.set()
+            await asyncio.Event().wait()
 
     raw_headers = [
         (b"host", b"test"),
@@ -244,4 +258,4 @@ def start_asgi(app: FastAPI, path: str, payload: dict, headers: dict[str, str]) 
         "server": ("test", 80),
     }
     task = asyncio.create_task(app(scope, receive, send))
-    return AsgiCall(sent, disconnect, task)
+    return AsgiCall(sent, disconnect, task, held)

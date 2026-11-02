@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 
 from fastmcp import FastMCP
@@ -274,6 +275,40 @@ async def test_without_identity_no_write_tools():
     assert api.h.script.tool_names(1) == {"buscar_documentos", "listar_tarefas", "criar_tarefa"}
 
 
+async def test_anonymous_conversation_continued_by_id_gets_no_write_tools():
+    """Um cliente anônimo que devolve o X-Conversation-Id recebido continua sem escrita."""
+    server = FastMCP("tarefas")
+
+    @server.tool
+    def listar_tarefas() -> str:
+        """Lista tarefas."""
+        return "nenhuma"
+
+    @server.tool
+    def criar_tarefa(titulo: str) -> str:
+        """Cria tarefa."""
+        return "criada"
+
+    mcp = [
+        McpServerConfig(
+            name="tarefas",
+            url="http://mcp.invalido/mcp",
+            allow=["listar_tarefas", "criar_tarefa"],
+            require_approval=["criar_tarefa"],
+        )
+    ]
+    app = make_app(native=["buscar_documentos"], mcp=mcp, rag=False, cache=False)
+    api = make_api(app, mcp_source=lambda cfg, headers: server)
+    async with api.client() as c:  # sem user_ref nem grupos
+        r1 = await c.post(CHAT, json=chat_body())
+        cid = r1.headers["x-conversation-id"]
+        r2 = await c.post(CHAT, json=chat_body(), headers={"X-Conversation-Id": cid})
+    assert r1.status_code == r2.status_code == 200
+    assert r2.headers["x-conversation-id"] == cid  # a conversa continuou
+    assert api.h.script.tool_names(1) == {"buscar_documentos", "listar_tarefas"}
+    assert api.h.approvals.calls == []  # nem resolve pendências de aprovação
+
+
 async def test_anonymous_request_searches_only_public_documents():
     retriever = FakeRetriever([chunk()])
     api = make_api(retriever=retriever)
@@ -414,6 +449,35 @@ async def test_client_disconnect_releases_slot():
     assert (
         r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "Resposta rápida."
     )
+
+
+async def test_cancel_during_send_releases_slot_without_gc():
+    """O cancelamento pela desconexão chega com o Starlette parado no `send` (o gerador do
+    corpo fica suspenso no `yield`): a vaga volta assim que a chamada termina, sem depender
+    da coleta de lixo fechar o gerador."""
+    gate = GenerationGate(1, 0, 5)
+    slow = SlowModel()
+    api = make_api(make_app(rag=False, cache=False), gate=gate, chain=slow.chain)
+    call = start_asgi(
+        api.app,
+        CHAT,
+        chat_body(stream=True),
+        {"Authorization": "Bearer enc_chave_a"},
+        hold_send=lambda m: b"Primeira frase." in m.get("body", b""),
+    )
+    await asyncio.wait_for(call.held.wait(), 5)
+    assert gate.available == 0
+    gc_enabled = gc.isenabled()
+    gc.disable()  # nada de coleta de lixo fechando o gerador por acaso
+    try:
+        call.disconnect.set()
+        await asyncio.wait_for(call.task, 2)
+        assert gate.available == 1  # já, sem gc.collect() nem voltas extras do loop
+    finally:
+        if gc_enabled:
+            gc.enable()
+    await wait_until(lambda: agent_tasks() == [])
+    assert api.history.appended == []
 
 
 async def test_client_disconnect_while_queued_frees_queue_place():
