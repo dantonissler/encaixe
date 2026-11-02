@@ -2,29 +2,27 @@
 
 Plataforma de agentes de IA que roda 100% local, montada em 13 peças plugáveis. Cada aplicação se liga ao bot por arquivos de configuração versionados no git (`apps/<id>/`) e conversa com ele por uma API compatível com a da OpenAI.
 
-> **Status:** MVP implementado e medido num notebook com RTX 3060 6 GB e 14 GB de RAM. Os números (VRAM, RAM, latência, evals e disputa de modelos) estão em [docs/mvp-medicoes.md](docs/mvp-medicoes.md). O design completo está em [docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md](docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md).
->
-> **Atenção:** neste MVP o modelo **não consegue chamar ferramentas** (nem as do MCP nem `buscar_documentos`). Antes de contar com elas, leia [Limitações conhecidas](#limitações-conhecidas).
+> **Status:** MVP implementado e medido num notebook com RTX 3060 6 GB e 14 GB de RAM. Os números (VRAM, RAM, latência, evals e disputa de modelos) estão em [docs/mvp-medicoes.md](docs/mvp-medicoes.md). O design completo está em [docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md](docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md). Antes de usar, leia [Limitações conhecidas](#limitações-conhecidas): o Llama Guard 3 1B ainda recusa pedidos legítimos com códigos (ex.: "Crie uma tarefa: revisar contrato 9f8e7d").
 
 ## As 13 peças
 
 | # | Peça | Como está no MVP |
 |---|------|------------------|
 | 1 | Janela de contexto | Histórico no Postgres, orçamento de tokens por seção (por app) e resumo acumulado gerado depois da resposta pelo worker |
-| 2 | RAG | Docling, chunking por títulos, busca híbrida (pgvector + full-text com `unaccent`) fundida por RRF e rerank com `bge-reranker-v2-m3` (CPU) |
+| 2 | RAG | Docling, chunking por títulos, busca híbrida (pgvector + full-text com `unaccent`) fundida por RRF e rerank com `bge-reranker-v2-m3` (CPU) dos `top_k` candidatos (10 no `exemplo`) |
 | 3 | Embeddings | `bge-m3` (1024 dimensões) no Ollama, na CPU, com cache no Redis |
 | 4 | Banco vetorial | PostgreSQL 17 + pgvector 0.8, RLS por app e ACL por trecho |
-| 5 | Tool calling | Ferramenta nativa `buscar_documentos` + camada MCP (FastMCP) com allowlist, identidade repassada ao adaptador e confirmação no servidor para escrita. **Hoje o modelo não chega a chamá-las** (ver limitações) |
+| 5 | Tool calling | Ferramenta nativa `buscar_documentos` + camada MCP (FastMCP) com allowlist, identidade repassada ao adaptador e confirmação no servidor para escrita (pedido repetido reaproveita a aprovação pendente). Erro da ferramenta volta ao modelo como nova tentativa |
 | 6 | Agente | Loop do Pydantic AI com limite de passos, de chamadas de ferramenta, prazo e detecção de loop |
-| 7 | Structured output | Schema Pydantic por app (JSON Schema aplicado por gramática no Ollama); o cliente escolhe texto, JSON ou TOON |
-| 8 | Streaming | SSE compatível com a OpenAI, terminando sempre em `data: [DONE]` |
-| 9 | Guardrails | Normalização, detector de injeção (heurística PT/EN; Prompt Guard 2 opcional), Llama Guard 3 1B, dados pessoais por regex com dígito verificador, canário e citações |
+| 7 | Structured output | Schema Pydantic por app entregue pela ferramenta de saída `responder` e garantido pela validação do Pydantic, com novas tentativas (não por gramática: ver desvios). Texto puro vale, sem citações, quando o turno não precisa delas. O cliente escolhe texto, JSON ou TOON |
+| 8 | Streaming | SSE compatível com a OpenAI, terminando sempre em `data: [DONE]`; resposta em texto puro sai frase a frase enquanto é gerada, a da ferramenta `responder` sai quando a chamada chega inteira |
+| 9 | Guardrails | Normalização, detector de injeção (heurística PT/EN; Prompt Guard 2 opcional), Llama Guard 3 1B (com falsos positivos conhecidos; sondagem em `evals/guard_probe.py`), dados pessoais por regex com dígito verificador, canário e citações |
 | 10 | Prompt caching | System prompt estável (cache de prefixo do Ollama) + cache exato de respostas e cache de embeddings no Redis |
 | 11 | Fallback | `qwen3.5:4b` (GPU) → `llama3.2:3b` (CPU) com circuit breaker; mensagens fixas quando tudo falha |
 | 12 | Evals | promptfoo (28 casos) + 2 casos de escrita em vários turnos, recall@5 e MRR do RAG, contagem de vazamento de ACL, baseline versionado e hook de `pre-push` |
 | 13 | Observabilidade | OpenTelemetry com convenções OpenInference → Arize Phoenix; logs JSON (structlog) com dados pessoais mascarados |
 
-Como roda: o Docker Compose sobe a infraestrutura (Postgres, Redis, Ollama, Phoenix e, por perfil, o adaptador MCP de exemplo e o Open WebUI). A API e o worker rodam no host com `uv`. O reranker e o detector de injeção rodam dentro do processo da API, na CPU. A GPU fica para o modelo principal.
+Como roda: o Docker Compose sobe a infraestrutura (Postgres, Redis, Ollama, Phoenix e, por perfil, o adaptador MCP de exemplo e o Open WebUI). A API e o worker rodam no host com `uv`. O reranker e o detector de injeção rodam dentro do processo da API, na CPU. A GPU fica para o modelo principal. Na partida, a API aquece o que as apps usam (reranker, modelo principal, Llama Guard e `bge-m3`) antes de aceitar requisições.
 
 | Serviço | Porta no host |
 |---------|---------------|
@@ -64,6 +62,8 @@ curl -s localhost:8100/ready # 200 {"status":"ready","missing":[]} quando tudo e
 ```
 
 `make api` e `make worker` exportam `HF_HUB_OFFLINE=1` e `TRANSFORMERS_OFFLINE=1`: em execução nada é baixado da internet. Por isso o `make models` precisa ter rodado antes.
+
+A API só passa a atender depois de aquecer os modelos (~10–15 s nesta máquina, com tudo frio): carrega o reranker e manda uma requisição mínima ao modelo principal, ao Llama Guard e ao `bge-m3`, um por vez. O reserva (`llama3.2-3b-cpu`) fica de fora para poupar RAM. Se o Ollama estiver fora do ar, a partida segue e o log registra `warmup_failed`; os modelos carregam na primeira requisição. `ENCAIXE_WARMUP=false` desliga o aquecimento.
 
 Corpus de exemplo (a empresa fictícia Aurora Ltda, em `apps/exemplo/docs/`):
 
@@ -179,6 +179,8 @@ O alvo roda, em ordem:
 
 **Disputa de modelos:** `make bakeoff` (ou `make bakeoff MODELS="qwen3.5:4b llama3.2:3b"`) roda a mesma suíte uma vez por modelo e grava a tabela em `evals/results/bakeoff-<data>.md`. O modelo é trocado pelo header `X-Encaixe-Model`, que **a API só aceita com `ENCAIXE_ENV=dev`** (o padrão; em `prod` o header é ignorado). Modelos que não estão no Ollama são pulados; para incluir o Gemma 4, rode `docker compose exec ollama ollama pull gemma4:e4b` antes. O cache exato usa o modelo na chave: para medir latência de verdade, apague o cache de respostas antes (`docker compose exec -T redis redis-cli --scan --pattern 'enc:resp:*' | xargs -r docker compose exec -T redis redis-cli del`).
 
+**Guard de conteúdo:** `uv run python evals/guard_probe.py --model <modelo do Ollama>` mede os falsos positivos (entradas e respostas legítimas) e a taxa de bloqueio (pedidos nocivos) do conjunto `evals/guard_probes.yaml`, com o mesmo formato de chamada do guard `content_safety`, e descarrega o modelo no fim. Aceita respostas no formato do Llama Guard e no de Sim/Não (ShieldGemma, Granite Guardian).
+
 **Hook de `pre-push`:** `make hooks` aponta o git para `scripts/git-hooks/`. A cada push com mudança em `apps/**`, o hook roda `make eval` das apps alteradas e bloqueia o push se houver regressão. Ele exige a API de pé e `ENCAIXE_EVAL_API_KEY`; para pular numa emergência, `git push --no-verify`.
 
 ## Desvios do spec no MVP
@@ -199,18 +201,19 @@ O alvo roda, em ordem:
 7. Migrações em SQL puro com executor próprio (sem Alembic).
 8. **Qwen3.5 com raciocínio ("thinking") desligado** (`reasoning_effort: "none"`). Ligado, ele gastava o orçamento de tokens raciocinando e o primeiro token levava ~30 s. Custo: menos qualidade em tarefas de vários passos.
 9. **Tamanho de contexto definido no servidor:** `OLLAMA_CONTEXT_LENGTH=8192` no `docker-compose.yml`. O endpoint `/v1` do Ollama ignora o `num_ctx` por requisição, então o `context.num_ctx` de uma app não pode passar desse valor.
-10. Fora do MVP: cache semântico, retenção e expurgo LGPD (incluindo `DELETE /v1/apps/{app_id}/users/{user_ref}/data`), TLS (Caddy), backups, red team completo, calibração do LLM-juiz e endpoint de aprovação fora da conversa.
+10. **Structured output pela ferramenta de saída, não por gramática** (spec §6.7). Com `NativeOutput` o Pydantic AI manda `response_format: json_schema`, o Ollama restringe a geração a esse JSON e o modelo nunca consegue chamar ferramentas. Agora a resposta final é uma ferramenta (`responder`, `ToolOutput`): o schema continua garantido pela validação do Pydantic, com até 2 novas tentativas, mas não pela decodificação restrita. Quando o turno não precisa de citação (app sem RAG, ferramenta MCP ou ação aprovada), texto puro também vale, com `citacoes` vazia.
+11. Fora do MVP: cache semântico, retenção e expurgo LGPD (incluindo `DELETE /v1/apps/{app_id}/users/{user_ref}/data`), TLS (Caddy), backups, red team completo, calibração do LLM-juiz e endpoint de aprovação fora da conversa.
 
 ## Limitações conhecidas
 
-- **O modelo não consegue chamar ferramentas (defeito aberto).** O agente usa saída nativa (`NativeOutput`): o Pydantic AI manda `response_format: json_schema` e o Ollama restringe a geração por gramática ao JSON da resposta, então o modelo nunca emite uma chamada de ferramenta. Na prática: "liste minhas tarefas" e "crie a tarefa X" não chamam o adaptador MCP, e `buscar_documentos` nunca é usada (o RAG funciona pela busca feita antes do agente). Detalhes e reprodução em [docs/mvp-medicoes.md](docs/mvp-medicoes.md#o-que-não-bateu).
+- **O modelo de 4B nem sempre usa bem as ferramentas.** Em ~metade dos turnos de documentos ele chama `buscar_documentos` mesmo já tendo os trechos da pré-busca (+~2 s de rerank e mais uma chamada ao modelo). Às vezes chama `listar_tarefas` numa pergunta sobre documentos; como a resposta passa a se apoiar numa ferramenta MCP, ela deixa de virar `NOT_FOUND` por falta de citação. Num pedido de escrita, pode converter "sexta" numa data errada nos argumentos: a pergunta de confirmação mostra o que vai ser gravado, e é o usuário quem confirma.
 - **Saudações viram "não encontrei"** nas apps com RAG e `require_citations: true`: "oi" recebe a mensagem `NOT_FOUND`, porque toda resposta sem citação válida é tratada como sem base.
-- **Apps com `require_citations` não fazem streaming frase a frase.** A resposta só pode sair depois de conferidas as citações, então o tempo até o primeiro token é praticamente o tempo total (5–10 s com RAG nesta máquina, a maior parte no rerank na CPU; meta do spec: 3 s). O modo `buffered_sentences` só libera por frase quando a resposta se apoia numa ferramenta ou numa ação aprovada.
-- **Llama Guard 3 1B tem falsos positivos.** Na saída: a resposta "Salário do Diretor Presidente (CEO): R$ 72.000,00", dada a um usuário do grupo `rh`, sai como `unsafe S1` e é retirada. Na entrada: pedidos como "Crie uma tarefa: renovar certificado digital 9f8e7d, prazo 2026-12-15" (com um código no meio) são recusados quase sempre. Ainda não há lista de categorias por app.
+- **Apps com `require_citations` não fazem streaming frase a frase.** A resposta só pode sair depois de conferidas as citações, então o tempo até o primeiro token é praticamente o tempo total (4,9–8,7 s com RAG nesta máquina: ~1,9 s de rerank na CPU, e mais uma busca quando o modelo chama `buscar_documentos`; meta do spec: 3 s). O modo `buffered_sentences` só libera por frase quando a resposta se apoia numa ferramenta ou numa ação aprovada.
+- **A resposta pela ferramenta `responder` não sai token a token.** O Ollama entrega a chamada de ferramenta inteira de uma vez; as frases são liberadas quando ela chega. Só a resposta em texto puro (turnos sem citação) chega aos poucos.
+- **Llama Guard 3 1B tem falsos positivos (defeito aberto).** Na saída: a resposta "Salário do Diretor Presidente (CEO): R$ 72.000,00", dada a um usuário do grupo `rh`, sai como `unsafe S1` e é retirada; uma pergunta de confirmação de tarefa saiu como `unsafe S6`. Na entrada: pedidos como "Crie uma tarefa: renovar certificado digital 9f8e7d, prazo 2026-12-15" (com um código hexadecimal ou numérico no meio) são recusados (8 de 8 variações na sondagem); por isso os 2 casos de escrita do eval reprovam. Nenhum guard alternativo que roda na CPU com ~2 GB resolveu: o ShieldGemma 2B não teve falso positivo, mas deixou passar os dois pedidos de conteúdo sexual com criança; o Granite Guardian 2B bloqueou tudo, mas recusou ainda mais pedidos legítimos (números em [docs/mvp-medicoes.md](docs/mvp-medicoes.md)). Ainda não há lista de categorias por app.
 - **Primeiro turno sem ferramentas de escrita.** Sem `X-Conversation-Id` nada é escrito (spec §7), e o id só existe depois do 1º turno. Um "crie a tarefa X" como primeira mensagem não cria nada.
 - **OCR de PDF desligado** por padrão (`ENCAIXE_DOCLING_OCR=false`; os modelos de OCR não são baixados). PDFs escaneados e imagens não são suportados no MVP.
-- **Fallback na CPU é lento.** O `llama3.2:3b` na CPU levou ~22 s por chamada com o modelo já carregado (49,5 s a resposta inteira). Carregá-lo com a RAM no limite estourou o prazo de cada chamada (30 s, metade dos 60 s do agente) e terminou em `ALL_FAILED`.
-- **Primeira requisição lenta.** Depois de subir tudo, a primeira pergunta levou ~25 s: o reranker e os modelos são carregados sob demanda.
+- **Fallback na CPU é lento e frágil com pouca RAM.** O `llama3.2:3b` na CPU levou ~22 s por chamada com o modelo já carregado (49,5 s a resposta inteira, meta de 20 s). Carregá-lo com a RAM no limite estourou o prazo de cada chamada (30 s, metade dos 60 s do agente) e terminou em `ALL_FAILED` depois de 156 s. O aquecimento da partida não carrega o reserva, de propósito: ele ocupa mais 2,5 GiB, e com a stack inteira (~7,9 GiB) numa máquina de 14 GiB compartilhada isso leva ao swap. Numa máquina com folga de RAM, deixar o reserva carregado resolve a carga a frio; nesta, os caminhos são um reserva menor (ex.: `llama3.2:1b`), menos contexto para o reserva, ou aceitar `ALL_FAILED` quando o principal cai.
 - **Llama Guard indisponível bloqueia** (`on_guard_unavailable: block`): com o Ollama fora do ar a resposta é "O serviço está temporariamente indisponível por segurança…", antes mesmo de tentar o modelo.
 - O adaptador MCP de exemplo guarda as tarefas em memória: reiniciar o container apaga tudo.
 - Reenviar um documento alterado cria um documento novo ao lado do antigo; apague o antigo pela API. Reenviar os mesmos bytes com outra ACL devolve o documento existente com a ACL antiga (não há endpoint para trocar ACL).
