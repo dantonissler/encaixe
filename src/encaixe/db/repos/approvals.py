@@ -37,13 +37,24 @@ class PgApprovalStore:
         args: dict,
         ttl_s: float = 600,
     ) -> str:
+        """Cria a aprovação pendente, ou reaproveita a que já está pendente (e não expirou) na
+        mesma conversa, para o mesmo usuário, ferramenta e args; o prazo dela é renovado.
+
+        Um lock por conversa serializa os pedidos: chamadas iguais na mesma resposta do modelo
+        rodam em paralelo e não podem criar duas linhas.
+        """
         with traced("db.approvals.create_pending"):
             async with app_scope(self._pool, app_id, None) as conn:
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext('tool_approvals:' || $1))",
+                    conversation_id,
+                )
                 aid = await conn.fetchval(
-                    "INSERT INTO tool_approvals (app_id, conversation_id, user_ref, server, "
-                    "tool, args, expires_at) VALUES ($1, $2, $3, $4, $5, $6, "
-                    "now() + $7 * interval '1 second') RETURNING id",
-                    app_id,
+                    "UPDATE tool_approvals SET expires_at = now() + $6 * interval '1 second' "
+                    "WHERE id = (SELECT id FROM tool_approvals WHERE conversation_id = $1 "
+                    "AND user_ref IS NOT DISTINCT FROM $2 AND server = $3 AND tool = $4 "
+                    "AND args = $5 AND status = 'pending' AND expires_at > now() "
+                    "ORDER BY created_at DESC LIMIT 1) RETURNING id",
                     conversation_id,
                     user_ref,
                     server,
@@ -51,6 +62,19 @@ class PgApprovalStore:
                     args,
                     float(ttl_s),
                 )
+                if aid is None:
+                    aid = await conn.fetchval(
+                        "INSERT INTO tool_approvals (app_id, conversation_id, user_ref, server, "
+                        "tool, args, expires_at) VALUES ($1, $2, $3, $4, $5, $6, "
+                        "now() + $7 * interval '1 second') RETURNING id",
+                        app_id,
+                        conversation_id,
+                        user_ref,
+                        server,
+                        tool,
+                        args,
+                        float(ttl_s),
+                    )
             return str(aid)
 
     async def get_pending(
