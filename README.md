@@ -63,7 +63,7 @@ curl -s localhost:8100/ready # 200 {"status":"ready","missing":[]} quando tudo e
 
 `make api` e `make worker` exportam `HF_HUB_OFFLINE=1` e `TRANSFORMERS_OFFLINE=1`: em execução nada é baixado da internet. Por isso o `make models` precisa ter rodado antes.
 
-A API só passa a atender depois de aquecer os modelos (~10–15 s nesta máquina, com tudo frio): carrega o reranker e manda uma requisição mínima ao modelo principal, ao ShieldGemma, ao Llama Guard e ao `bge-m3`, um por vez. O reserva (`llama3.2-3b-cpu`) fica de fora para poupar RAM. Se o Ollama estiver fora do ar, a partida segue e o log registra `warmup_failed`; os modelos carregam na primeira requisição. `ENCAIXE_WARMUP=false` desliga o aquecimento.
+A API só passa a atender depois de aquecer os modelos (~11–22 s nesta máquina, com tudo frio): carrega o reranker e manda uma requisição mínima ao modelo principal, ao ShieldGemma, ao Llama Guard e ao `bge-m3`, um por vez. O reserva (`llama3.2-3b-cpu`) fica de fora para poupar RAM. Se o Ollama estiver fora do ar, a partida segue e o log registra `warmup_failed`; os modelos carregam na primeira requisição. `ENCAIXE_WARMUP=false` desliga o aquecimento.
 
 Corpus de exemplo (a empresa fictícia Aurora Ltda, em `apps/exemplo/docs/`):
 
