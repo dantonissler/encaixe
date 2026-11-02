@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -33,40 +34,52 @@ ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = ROOT / "evals" / "results"
 READER = "eval-leitor"
 READER_TASKS = ["Enviar relatório mensal", "Renovar crachá"]
-CASES = [
-    {
-        "id": "escrita-1",
-        "user": "eval-escritor-1",
-        "prompt": "Crie uma tarefa: revisar contrato, prazo sexta",
-        "needle": "revisar contrato",
-    },
-    {
-        "id": "escrita-2",
-        "user": "eval-escritor-2",
-        "prompt": "Crie uma tarefa: renovar certificado digital, prazo 2026-12-15",
-        "needle": "renovar certificado digital",
-    },
-]
+
+
+def make_cases(run_id: str) -> list[dict[str, str]]:
+    """Casos com usuário e título únicos por execução: o adaptador guarda tudo em memória,
+    então um título fixo passaria no re-run mesmo sem a tarefa ser criada agora."""
+    return [
+        {
+            "id": "escrita-1",
+            "user": f"eval-escritor-1-{run_id}",
+            "prompt": f"Crie uma tarefa: revisar contrato {run_id}, prazo sexta",
+            "needle": f"revisar contrato {run_id}",
+        },
+        {
+            "id": "escrita-2",
+            "user": f"eval-escritor-2-{run_id}",
+            "prompt": f"Crie uma tarefa: renovar certificado digital {run_id}, prazo 2026-12-15",
+            "needle": f"renovar certificado digital {run_id}",
+        },
+    ]
+
+
 CREATED = re.compile(r"\b(cri(ei|ada|ado)|criou|registr\w+|adicion\w+)\b", re.IGNORECASE)
 
 
-def check_turns(ask: str, answer: str, listing: str, needle: str) -> list[str]:
-    """Falhas de um caso (lista vazia = passou)."""
+def check_turns(ask: str, answer: str, before: str, after: str, needle: str) -> list[str]:
+    """Falhas de um caso (lista vazia = passou). A tarefa só pode aparecer depois do turno 2."""
     failures = []
     if "confirma" not in ask.lower():
         failures.append("turno 1: a resposta não pede confirmação")
     if not CREATED.search(answer):
         failures.append("turno 2: a resposta não diz que a tarefa foi criada")
-    if needle.lower() not in listing.lower():
+    if needle.lower() in before.lower():
+        failures.append("a tarefa já existia antes do turno 2 (checagem inválida)")
+    elif needle.lower() not in after.lower():
         failures.append("listar_tarefas não mostra a tarefa criada")
     return failures
 
 
 def merge_extra(path: Path, summary: dict[str, Any]) -> None:
-    """Grava `extra.multiturn` no JSON de resultados, preservando o resto."""
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    """Grava `extra.multiturn` no JSON de resultados do promptfoo, preservando o resto.
+
+    Recusa criar o arquivo: sem os resultados do promptfoo não há o que avaliar."""
+    if not path.exists():
+        raise FileNotFoundError(f"resultados do promptfoo ausentes: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("extra", {})["multiturn"] = summary
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -124,21 +137,22 @@ async def seed_reader_tasks() -> None:
     print(f"tarefas de {READER} prontas: {', '.join(READER_TASKS)}")
 
 
-async def run_cases() -> dict[str, Any]:
+async def run_cases(run_id: str) -> dict[str, Any]:
     base = os.environ.get("ENCAIXE_API_URL", "http://localhost:8100")
     results = []
     async with httpx.AsyncClient(base_url=base, timeout=300) as client:
-        for case in CASES:
+        for case in make_cases(run_id):
             failures: list[str] = []
             try:
+                before = await _mcp(case["user"], "listar_tarefas")
                 ask, cid = await _chat(client, case["user"], case["prompt"])
                 if not cid:
                     raise RuntimeError("a API não devolveu X-Conversation-Id")
                 answer, _ = await _chat(client, case["user"], "sim", cid)
-                listing = await _mcp(case["user"], "listar_tarefas")
-                failures = check_turns(ask, answer, listing, case["needle"])
+                after = await _mcp(case["user"], "listar_tarefas")
+                failures = check_turns(ask, answer, before, after, case["needle"])
             except Exception as exc:  # noqa: BLE001 - um caso quebrado não derruba os outros
-                ask = answer = listing = ""
+                ask = answer = ""
                 failures = [f"erro: {type(exc).__name__}: {exc}"]
             results.append({"id": case["id"], "failures": failures, "turn1": ask, "turn2": answer})
             print(f"{case['id']}: {'ok' if not failures else 'FALHOU ' + '; '.join(failures)}")
@@ -148,6 +162,7 @@ async def run_cases() -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--app", default="exemplo")
+    parser.add_argument("--results", type=Path, help="JSON do promptfoo (padrão: results/<app>)")
     parser.add_argument("--seed-only", action="store_true", help="só cria as tarefas de leitura")
     args = parser.parse_args(argv)
     if not os.environ.get("ENCAIXE_EVAL_API_KEY"):
@@ -156,8 +171,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.seed_only:
         asyncio.run(seed_reader_tasks())
         return 0
-    summary = asyncio.run(run_cases())
-    merge_extra(RESULTS_DIR / f"{args.app}.json", summary)
+    target = args.results or RESULTS_DIR / f"{args.app}.json"
+    if not target.exists():
+        print(f"resultados do promptfoo ausentes ({target}); o promptfoo falhou?", file=sys.stderr)
+        return 1
+    summary = asyncio.run(run_cases(uuid.uuid4().hex[:6]))
+    merge_extra(target, summary)
     print(f"multiturn: {summary['passed']}/{summary['total']}")
     return 0  # a regressão é julgada pelo compare_baseline.py
 

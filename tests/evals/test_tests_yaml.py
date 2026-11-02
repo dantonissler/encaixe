@@ -23,7 +23,8 @@ def test_categories_and_fixed_messages():
 
 def test_retrieval_cases_and_corpus_titles():
     cases = load_cases(TESTS)
-    assert len(cases) == 15
+    assert len([c for c in cases if c["expected_docs"]]) == 15
+    assert sum(1 for c in cases if c["forbidden_docs"] == ["salarios-diretoria"]) == 3
     titles = {p.stem for p in (ROOT / "apps" / "exemplo" / "docs").glob("*.md")}
     assert {d for c in cases for d in c["expected_docs"]} <= titles
     assert any(c["groups"] == ("rh",) for c in cases)

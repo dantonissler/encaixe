@@ -13,8 +13,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
-METRICS = ("pass_rate", "recall@5", "mrr")
+METRICS = ("pass_rate", "recall@5", "mrr")  # acl_leaks é checado à parte (deve ser 0)
 
 
 def compare(current: dict, baseline: dict, max_drop: float = 0.05) -> list[str]:
@@ -26,27 +28,42 @@ def compare(current: dict, baseline: dict, max_drop: float = 0.05) -> list[str]:
         before, now = baseline[name], current.get(name, 0.0)
         if before - now > max_drop + 1e-9:
             problems.append(f"{name}: {before:.3f} -> {now:.3f} (queda de {before - now:.3f})")
+    if current.get("acl_leaks", 0) > 0:  # independe da baseline
+        problems.append(
+            f"acl_leaks: {current['acl_leaks']} (a recuperação vazou documento restrito)"
+        )
     return problems
 
 
-def pass_rate(promptfoo: dict[str, Any]) -> float:
-    """Taxa de aprovação: casos do promptfoo mais os do multiturn (`extra.multiturn`)."""
+def count_cases(app: str, apps_dir: Path) -> int:
+    tests = yaml.safe_load((apps_dir / app / "evals" / "tests.yaml").read_text(encoding="utf-8"))
+    return len(tests)
+
+
+def pass_rate(promptfoo: dict[str, Any], min_cases: int = 1) -> float:
+    """Taxa de aprovação: casos do promptfoo mais os do multiturn (`extra.multiturn`).
+
+    Falha (ValueError) se o promptfoo não produziu resultados para todos os `min_cases` casos:
+    sem isso, o multiturn sozinho daria 100% e o gate passaria no vazio."""
     stats = (promptfoo.get("results") or {}).get("stats") or {}
     passed = stats.get("successes", 0)
     total = passed + stats.get("failures", 0) + stats.get("errors", 0)
+    if total < min_cases:
+        raise ValueError(f"promptfoo produziu {total} resultado(s); esperados {min_cases}")
     extra = (promptfoo.get("extra") or {}).get("multiturn") or {}
     passed += extra.get("passed", 0)
     total += extra.get("total", 0)
     return passed / total if total else 0.0
 
 
-def collect(app: str, results_dir: Path) -> dict[str, float]:
+def collect(app: str, results_dir: Path, min_cases: int = 1) -> dict[str, float]:
     promptfoo = json.loads((results_dir / f"{app}.json").read_text(encoding="utf-8"))
     retrieval = json.loads((results_dir / f"{app}-retrieval.json").read_text(encoding="utf-8"))
     return {
-        "pass_rate": pass_rate(promptfoo),
+        "pass_rate": pass_rate(promptfoo, min_cases),
         "recall@5": retrieval["recall@5"],
         "mrr": retrieval["mrr"],
+        "acl_leaks": retrieval["acl_leaks"],
     }
 
 
@@ -55,6 +72,7 @@ def main(
     *,
     results_dir: Path = ROOT / "evals" / "results",
     baselines_dir: Path = ROOT / "evals" / "baselines",
+    min_cases: int | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", required=True)
@@ -63,12 +81,20 @@ def main(
     args = parser.parse_args(argv)
 
     try:
-        current = collect(args.app, results_dir)
+        if min_cases is None:
+            min_cases = count_cases(args.app, ROOT / "apps")
+        current = collect(args.app, results_dir, min_cases)
     except FileNotFoundError as exc:
         print(f"resultado ausente: {exc.filename}. Rode `make eval APP={args.app}`.")
         return 1
+    except (ValueError, KeyError) as exc:
+        print(f"resultados inválidos ou incompletos: {exc}. Rode `make eval APP={args.app}`.")
+        return 1
     print(" ".join(f"{k}={v:.3f}" for k, v in current.items()))
     path = baselines_dir / f"{args.app}.json"
+    if current["acl_leaks"] > 0:
+        print(f"REGRESSÃO acl_leaks: {current['acl_leaks']}")
+        return 1
     if args.update:
         baselines_dir.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")

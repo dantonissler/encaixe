@@ -35,12 +35,18 @@ def mrr(expected: set[str], got: list[str]) -> float:
     return 0.0
 
 
+def count_leaks(forbidden: set[str], got: list[str]) -> int:
+    """Quantos documentos proibidos (ACL) apareceram na recuperação."""
+    return len(forbidden & set(got))
+
+
 def load_cases(path: Path) -> list[dict[str, Any]]:
-    """Casos com `expected_docs`: {prompt, user_ref, groups, expected_docs}."""
+    """Casos com `expected_docs` e/ou `forbidden_docs` (checagem negativa de ACL)."""
     cases = []
     for test in yaml.safe_load(path.read_text(encoding="utf-8")):
-        expected = (test.get("metadata") or {}).get("expected_docs")
-        if not expected:
+        meta = test.get("metadata") or {}
+        expected, forbidden = meta.get("expected_docs"), meta.get("forbidden_docs")
+        if not expected and not forbidden:
             continue
         vars_ = test.get("vars") or {}
         groups = [g.strip() for g in str(vars_.get("groups") or "").split(",") if g.strip()]
@@ -49,18 +55,22 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
                 "prompt": vars_["prompt"],
                 "user_ref": vars_.get("user_ref") or None,
                 "groups": tuple(groups),
-                "expected_docs": list(expected),
+                "expected_docs": list(expected or []),
+                "forbidden_docs": list(forbidden or []),
             }
         )
     return cases
 
 
 def summarize(rows: list[dict[str, Any]], k: int) -> dict[str, Any]:
-    n = len(rows) or 1
+    scored = [r for r in rows if r["expected"]]  # os casos só de ACL não entram nas médias
+    n = len(scored) or 1
     return {
-        f"recall@{k}": sum(r["recall"] for r in rows) / n,
-        "mrr": sum(r["mrr"] for r in rows) / n,
-        "cases": len(rows),
+        f"recall@{k}": sum(r["recall"] for r in scored) / n,
+        "mrr": sum(r["mrr"] for r in scored) / n,
+        "cases": len(scored),
+        "acl_cases": sum(1 for r in rows if r.get("forbidden")),
+        "acl_leaks": sum(r.get("leaks", 0) for r in rows),
         "details": rows,
     }
 
@@ -103,10 +113,13 @@ async def _run(app_id: str, k: int) -> dict[str, Any]:
                 if title not in got:
                     got.append(title)
             expected = set(case["expected_docs"])
+            forbidden = set(case["forbidden_docs"])
             details.append(
                 {
                     "prompt": case["prompt"],
                     "expected": sorted(expected),
+                    "forbidden": sorted(forbidden),
+                    "leaks": count_leaks(forbidden, got),
                     "got": got,
                     "recall": recall_at_k(expected, got, k),
                     "mrr": mrr(expected, got),
@@ -129,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         f"{args.app}: recall@{args.k}={result[f'recall@{args.k}']:.3f} "
-        f"mrr={result['mrr']:.3f} ({result['cases']} casos) -> {out}"
+        f"mrr={result['mrr']:.3f} ({result['cases']} casos) "
+        f"acl_leaks={result['acl_leaks']} -> {out}"
     )
     return 0
 
