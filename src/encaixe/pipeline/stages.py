@@ -266,6 +266,17 @@ class AgentUpdate:
     value: Any = None
 
 
+def post_terminal_if_missing(task: asyncio.Task[None], queue: asyncio.Queue[AgentUpdate]) -> None:
+    """Callback de término da tarefa do agente: se ela morreu sem publicar o desfecho
+    (BaseException fora de `Exception`, cancelamento externo), publica um erro para o
+    consumidor não esperar `queue.get()` para sempre segurando a vaga de geração."""
+    if task.cancelled():
+        queue.put_nowait(AgentUpdate("error", asyncio.CancelledError()))
+    elif (exc := task.exception()) is not None:
+        log.error("agent_driver_crashed", error=type(exc).__name__)
+        queue.put_nowait(AgentUpdate("error", exc))
+
+
 async def drive_agent(
     agent: Agent[Any, RespostaBase],
     built: BuiltContext,

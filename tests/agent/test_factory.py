@@ -11,7 +11,12 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.toolsets import FunctionToolset
 
-from encaixe.agent.factory import build_agent, run_outcome_on_limit, usage_limits_for
+from encaixe.agent.factory import (
+    build_agent,
+    model_request_timeout,
+    run_outcome_on_limit,
+    usage_limits_for,
+)
 from encaixe.agent.loop_guard import LoopDetected
 from encaixe.core.config import AgentConfig, AppConfig, ContextConfig, LoadedApp, ModelsConfig
 from encaixe.messages import LIMIT_REACHED
@@ -23,10 +28,10 @@ class StubDeps:
     pass
 
 
-def make_app(**agent) -> LoadedApp:
+def make_app(fallbacks: list[str] | None = None, **agent) -> LoadedApp:
     cfg = AppConfig(
         id="a",
-        models=ModelsConfig(primary="test"),
+        models=ModelsConfig(primary="test", fallbacks=fallbacks or []),
         context=ContextConfig(num_ctx=4096),
         agent=AgentConfig(**agent),
     )
@@ -89,3 +94,18 @@ def test_outcome_lists_tools_and_handles_loop():
     out = run_outcome_on_limit(LoopDetected("buscar", 3), ["buscar", "ler"])
     assert out.resposta == f"{LIMIT_REACHED} Ferramentas usadas: buscar, ler."
     assert run_outcome_on_limit(LoopDetected("b", 3)).resposta == LIMIT_REACHED
+
+
+@pytest.mark.parametrize(
+    "timeout_s,fallbacks,expected",
+    [
+        (60, [], 60.0),  # sem reserva: o prazo inteiro
+        (60, ["ollama:reserva"], 30.0),  # principal travado ainda deixa 30 s ao reserva
+        (90, ["ollama:r1", "ollama:r2"], 30.0),
+        (20, ["ollama:r1", "ollama:r2"], 10.0),  # piso de 10 s
+    ],
+)
+def test_model_request_timeout_leaves_room_for_fallbacks(timeout_s, fallbacks, expected):
+    app = make_app(fallbacks=fallbacks, timeout_s=timeout_s)
+    assert model_request_timeout(app) == expected
+    assert build_agent(app, TestModel(), []).model_settings["timeout"] == expected

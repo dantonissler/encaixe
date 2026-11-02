@@ -9,6 +9,7 @@ from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.models.fallback import FallbackModel
 
 from encaixe.core.config import McpServerConfig
+from encaixe.core.pii import mask_pii
 from encaixe.core.registry import register
 from encaixe.core.types import ChatMessage, GuardResult, Principals
 from encaixe.llm.breaker import BreakerRegistry
@@ -148,6 +149,26 @@ async def test_persists_masked_user_message_when_pii():
     ]
     assert "529.982.247-25" in h.script.prompt()  # o modelo recebe o texto original (normalizado)
     assert h.cache.sets == []  # dado pessoal nunca vai para o cache
+
+
+async def test_persists_masked_assistant_reply_when_pii():
+    app = make_app(input_guards=["normalize", "pii"])
+    reply = "Anotei o CPF 529.982.247-25 e o e-mail ana@aurora.com.br."
+    h = make_harness(app, Script(answer(reply)))
+    msg = "Meu CPF é 529.982.247-25 e meu e-mail é ana@aurora.com.br."
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, msg, identity=True))
+    assert final_of(events).output.resposta == reply  # o usuário recebe a resposta como é
+    assert text_of(events) == reply
+    (_, persisted) = h.history.appended[-1]
+    assert "529.982.247-25" not in persisted and "ana@aurora.com.br" not in persisted
+    assert persisted == mask_pii(reply)
+
+
+async def test_assistant_reply_not_masked_without_pii_in_turn():
+    app = make_app(input_guards=["normalize", "pii"])
+    h = make_harness(app, Script(answer("O telefone do RH é (11) 3333-4444.")))
+    await collect(ChatPipeline(h.deps), make_ctx(app, "Qual o telefone do RH?", identity=True))
+    assert h.history.appended[-1] == ("assistant", "O telefone do RH é (11) 3333-4444.")
 
 
 # --- 2. aprovações ---------------------------------------------------------------------------
@@ -568,6 +589,26 @@ async def test_timeout_returns_all_failed():
     assert text_of(events) == ALL_FAILED
 
 
+class DriverCrash(BaseException):
+    """Escapa do `except Exception` do driver (não é CancelledError do consumidor)."""
+
+
+async def test_agent_driver_dying_without_terminal_update_does_not_hang(monkeypatch):
+    import encaixe.pipeline.chat as chat_module
+
+    async def crashing_driver(agent, built, deps, limits, timeout_s, queue):
+        await asyncio.sleep(0)
+        raise DriverCrash("morreu sem avisar")
+
+    monkeypatch.setattr(chat_module, "drive_agent", crashing_driver)
+    app = make_app(rag=False)
+    h = make_harness(app)
+    events = await asyncio.wait_for(collect(ChatPipeline(h.deps), make_ctx(app)), 5)
+    assert text_of(events) == ALL_FAILED
+    assert final_of(events).output.resposta == ALL_FAILED
+    assert h.cache.sets == []
+
+
 async def test_unexpected_error_still_ends_with_final(monkeypatch):
     app = make_app(rag=False)
     h = make_harness(app)
@@ -595,6 +636,20 @@ async def test_output_block_emits_retraction():
     assert out.resposta == RETRACTION and out.citacoes == []
     assert h.cache.sets == []
     assert h.history.appended[-1] == ("assistant", RETRACTION)
+
+
+@pytest.mark.parametrize("mode", ["buffered_sentences", "strict"])
+async def test_output_guard_unavailable_is_guard_unavailable_not_retraction(mode):
+    # tp_boom levanta: o runner dá block com reason "unavailable" (Llama Guard fora do ar)
+    app = make_app(output_guards=["tp_boom"], on_unavailable="block", rag=False, mode=mode)
+    h = make_harness(app, Script(answer("Frase um. Frase dois.", []), chunk=3))
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, identity=True))
+    out = final_of(events).output
+    assert out.resposta == GUARD_UNAVAILABLE and out.citacoes == []
+    assert events[-2] == Retraction(GUARD_UNAVAILABLE)  # o texto já liberado deixa de valer
+    assert RETRACTION not in str(events)
+    assert h.cache.sets == []
+    assert h.history.appended[-1] == ("assistant", GUARD_UNAVAILABLE)
 
 
 async def test_strict_mode_releases_nothing_before_check():

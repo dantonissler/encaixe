@@ -15,6 +15,7 @@ from encaixe.cache.exact import exact_key, is_cacheable
 from encaixe.context.aliases import resolve_citations
 from encaixe.context.builder import BuiltContext, ContextBuilder, conversation_messages
 from encaixe.context.untrusted import new_boundary
+from encaixe.core.pii import mask_pii
 from encaixe.core.types import ChatMessage, RequestContext
 from encaixe.guardrails.canary import make_canary
 from encaixe.guardrails.runner import blocked, run_guards, run_output_guards
@@ -32,6 +33,7 @@ from encaixe.pipeline.stages import (
     may_write,
     model_specs,
     not_found_reason,
+    post_terminal_if_missing,
     primary_model_name,
     span_attr,
     static_output,
@@ -263,6 +265,7 @@ class ChatPipeline:
             ),
             name=f"encaixe.agent.{ctx.request_id}",
         )
+        task.add_done_callback(lambda t: post_terminal_if_missing(t, queue))
         try:
             while True:
                 update = await queue.get()
@@ -321,7 +324,8 @@ class ChatPipeline:
             ctx.guard_results.extend(turn.output_results)
             if (hit := blocked(turn.output_results)) is not None:
                 span_attr("guard.blocked", hit.guard)
-                turn.finish_static(RETRACTION)
+                # Guard fora do ar (fail-closed) não é violação de política.
+                turn.finish_static(GUARD_UNAVAILABLE if hit.reason == "unavailable" else RETRACTION)
                 retract = True
         return turn.releaser.closing(turn.output.resposta, retract=retract)
 
@@ -358,7 +362,9 @@ class ChatPipeline:
         if ctx.conversation_id is None or turn.output is None:
             return
         app_id, cid, count = ctx.app.config.id, ctx.conversation_id, self.deps.counter.count
-        answer = turn.output.resposta
+        # Turno com dado pessoal: a resposta gravada (lida depois pelo resumidor) também vai
+        # mascarada; a que o usuário recebeu não muda.
+        answer = mask_pii(turn.output.resposta) if turn.pii_flagged else turn.output.resposta
         tools = [{"name": t} for t in ctx.tools_called] or None
         meta = {"trace_id": trace_id, "prompt_version": ctx.app.prompt_version}
         try:

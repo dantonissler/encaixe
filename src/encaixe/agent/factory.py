@@ -34,12 +34,13 @@ def build_agent(
     o contexto efetivo é o do servidor (`OLLAMA_CONTEXT_LENGTH` no docker-compose, ou
     `PARAMETER num_ctx` num Modelfile). Logo, `num_ctx` por app não deve exceder esse valor.
     O `extra_body` é mantido por ser inofensivo; ele também leva `reasoning_effort: "none"`
-    (ver `NO_REASONING`). `timeout` vai em `model_settings` (timeout HTTP
-    por requisição ao modelo); o pipeline também envolve a execução em `asyncio.timeout`.
+    (ver `NO_REASONING`). `timeout` vai em `model_settings` (timeout HTTP por requisição ao
+    modelo, ver `model_request_timeout`); o pipeline envolve a execução inteira em
+    `asyncio.timeout(agent.timeout_s)`.
     """
     settings = ModelSettings(
         extra_body={"options": {"num_ctx": app.config.context.num_ctx}, **NO_REASONING},
-        timeout=float(app.config.agent.timeout_s),
+        timeout=model_request_timeout(app),
     )
     return Agent(
         model,
@@ -48,6 +49,20 @@ def build_agent(
         retries={"output": 2},
         model_settings=settings,
     )
+
+
+MIN_MODEL_REQUEST_TIMEOUT_S = 10.0
+
+
+def model_request_timeout(app: LoadedApp) -> float:
+    """Timeout HTTP de cada chamada a um modelo da cadeia.
+
+    O prazo da execução (`agent.timeout_s`) é dividido entre o principal e os reservas: um
+    principal travado não consome o prazo inteiro e ainda sobra tempo para o reserva.
+    """
+    agent_timeout = float(app.config.agent.timeout_s)
+    share = agent_timeout / (1 + len(app.config.models.fallbacks))
+    return max(MIN_MODEL_REQUEST_TIMEOUT_S, share)
 
 
 def usage_limits_for(app: LoadedApp) -> UsageLimits:
