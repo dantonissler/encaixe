@@ -15,3 +15,11 @@ def test_principals_reject_commas_and_empty():
     for args in (("x,group:rh",), (None, ("a,group:rh",)), ("",), (None, ("",))):
         with pytest.raises(ValueError):
             Principals(*args)
+
+
+def test_fingerprint_is_unambiguous():
+    """Revisão final M-T12: juntar com "|" fazia o grupo `rh|user:x` colidir com o usuário x
+    no grupo rh (mesma chave do cache exato)."""
+    forged = Principals(None, ("rh|user:x",))
+    real = Principals("x", ("rh",))
+    assert forged.fingerprint() != real.fingerprint()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -28,7 +29,10 @@ class Principals:
         return result
 
     def fingerprint(self) -> str:
-        return hashlib.sha256("|".join(sorted(self.as_list())).encode()).hexdigest()[:16]
+        # JSON da lista ordenada: codificação sem ambiguidade (com "|" o grupo `rh|user:x`
+        # colidia com o usuário x no grupo rh na chave do cache exato).
+        encoded = json.dumps(sorted(self.as_list()), ensure_ascii=False)
+        return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
 
 @dataclass
