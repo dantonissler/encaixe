@@ -1,25 +1,218 @@
 # encaixe
 
-Plataforma local de agentes de IA montada em 13 peças plugáveis. Cada peça resolve um problema que a anterior criou, e cada aplicação se conecta ao bot por configuração.
+Plataforma de agentes de IA que roda 100% local, montada em 13 peças plugáveis. Cada aplicação se liga ao bot por arquivos de configuração versionados no git (`apps/<id>/`) e conversa com ele por uma API compatível com a da OpenAI.
 
-> **Status:** planejamento. Ainda não há código. O design está em [docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md](docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md).
+> **Status:** MVP implementado e medido num notebook com RTX 3060 6 GB e 14 GB de RAM. Os números (VRAM, RAM, latência, evals e disputa de modelos) estão em [docs/mvp-medicoes.md](docs/mvp-medicoes.md). O design completo está em [docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md](docs/superpowers/specs/2026-11-01-chatbot-13-pecas-design.md).
+>
+> **Atenção:** neste MVP o modelo **não consegue chamar ferramentas** (nem as do MCP nem `buscar_documentos`). Antes de contar com elas, leia [Limitações conhecidas](#limitações-conhecidas).
 
 ## As 13 peças
 
-| # | Peça | Tecnologia prevista |
-|---|------|---------------------|
-| 1 | Janela de contexto | Histórico no Postgres, orçamento de tokens, resumo acumulado |
-| 2 | RAG | Docling, busca híbrida (vetorial + full-text), rerank |
-| 3 | Embeddings | bge-m3 |
-| 4 | Banco vetorial | PostgreSQL + pgvector |
-| 5 | Tool calling | Pydantic AI + camada MCP (FastMCP) para sistemas terceiros |
-| 6 | Agente | Loop do Pydantic AI com limites de passos e detecção de loop |
-| 7 | Structured output | JSON Schema por gramática + TOON |
-| 8 | Streaming | SSE compatível com a API da OpenAI |
-| 9 | Guardrails | Prompt Guard 2, Llama Guard 3, Presidio |
-| 10 | Prompt caching | Cache de prefixo do motor + Redis 8 (exato, semântico, embeddings) |
-| 11 | Fallback | Cadeia de modelos, circuit breaker, degradação por peça |
-| 12 | Evals | promptfoo + métricas de recuperação, rodando a cada mudança de prompt |
-| 13 | Observabilidade | OpenTelemetry → Arize Phoenix |
+| # | Peça | Como está no MVP |
+|---|------|------------------|
+| 1 | Janela de contexto | Histórico no Postgres, orçamento de tokens por seção (por app) e resumo acumulado gerado depois da resposta pelo worker |
+| 2 | RAG | Docling, chunking por títulos, busca híbrida (pgvector + full-text com `unaccent`) fundida por RRF e rerank com `bge-reranker-v2-m3` (CPU) |
+| 3 | Embeddings | `bge-m3` (1024 dimensões) no Ollama, na CPU, com cache no Redis |
+| 4 | Banco vetorial | PostgreSQL 17 + pgvector 0.8, RLS por app e ACL por trecho |
+| 5 | Tool calling | Ferramenta nativa `buscar_documentos` + camada MCP (FastMCP) com allowlist, identidade repassada ao adaptador e confirmação no servidor para escrita. **Hoje o modelo não chega a chamá-las** (ver limitações) |
+| 6 | Agente | Loop do Pydantic AI com limite de passos, de chamadas de ferramenta, prazo e detecção de loop |
+| 7 | Structured output | Schema Pydantic por app (JSON Schema aplicado por gramática no Ollama); o cliente escolhe texto, JSON ou TOON |
+| 8 | Streaming | SSE compatível com a OpenAI, terminando sempre em `data: [DONE]` |
+| 9 | Guardrails | Normalização, detector de injeção (heurística PT/EN; Prompt Guard 2 opcional), Llama Guard 3 1B, dados pessoais por regex com dígito verificador, canário e citações |
+| 10 | Prompt caching | System prompt estável (cache de prefixo do Ollama) + cache exato de respostas e cache de embeddings no Redis |
+| 11 | Fallback | `qwen3.5:4b` (GPU) → `llama3.2:3b` (CPU) com circuit breaker; mensagens fixas quando tudo falha |
+| 12 | Evals | promptfoo (28 casos) + 2 casos de escrita em vários turnos, recall@5 e MRR do RAG, contagem de vazamento de ACL, baseline versionado e hook de `pre-push` |
+| 13 | Observabilidade | OpenTelemetry com convenções OpenInference → Arize Phoenix; logs JSON (structlog) com dados pessoais mascarados |
 
-Tudo roda localmente: Ollama (Qwen3.5, Gemma 4, Llama), Postgres, Redis e Phoenix em Docker Compose.
+Como roda: o Docker Compose sobe a infraestrutura (Postgres, Redis, Ollama, Phoenix e, por perfil, o adaptador MCP de exemplo e o Open WebUI). A API e o worker rodam no host com `uv`. O reranker e o detector de injeção rodam dentro do processo da API, na CPU. A GPU fica para o modelo principal.
+
+| Serviço | Porta no host |
+|---------|---------------|
+| API (`make api`) | 8100 |
+| Postgres | 55432 |
+| Redis | 56379 |
+| Ollama | 11434 |
+| Phoenix (traces) | 6006 |
+| Adaptador MCP de exemplo (perfil `tools`) | 8765 |
+| Open WebUI (perfil `ui`) | 38080 |
+
+## Pré-requisitos
+
+- Linux com GPU NVIDIA, driver instalado e o **NVIDIA Container Toolkit** (o container do Ollama reserva a GPU). Medido com RTX 3060 6 GB e 14 GB de RAM; com menos RAM o fallback na CPU fica instável (ver [docs/mvp-medicoes.md](docs/mvp-medicoes.md)).
+- **Docker** com Compose v2.
+- **[uv](https://docs.astral.sh/uv/)**. Ele instala o Python 3.12 e as dependências (torch só para CPU).
+- **Node.js ≥ 22.22**, só para os evals (promptfoo 0.125.1). Se o `node` do PATH for mais antigo, `scripts/promptfoo.sh` procura um Node 22 instalado pelo `nvm`.
+- Uns 14 GB de disco: ~8 GB de modelos no volume do Ollama, ~2,2 GB do reranker no cache do Hugging Face, ~1,4 GB dos modelos do Docling e ~1,8 GB do `.venv`.
+
+## Subindo passo a passo
+
+```bash
+uv sync                      # dependências Python (.venv)
+cp .env.example .env         # opcional: os padrões já apontam para as portas acima
+
+make up                      # Postgres, Redis, Ollama e Phoenix (espera ficarem saudáveis)
+make models                  # uma vez: modelos do Ollama + aliases de CPU + reranker e Docling
+make migrate                 # schema do banco
+
+# adaptador MCP de exemplo (tarefas por usuário, em memória)
+docker compose --profile tools up -d --build mcp-tarefas
+
+make api                     # terminal 1: API em http://localhost:8100
+make worker                  # terminal 2: ingestão de documentos e resumos
+
+curl -s localhost:8100/ready # 200 {"status":"ready","missing":[]} quando tudo está de pé
+```
+
+`make api` e `make worker` exportam `HF_HUB_OFFLINE=1` e `TRANSFORMERS_OFFLINE=1`: em execução nada é baixado da internet. Por isso o `make models` precisa ter rodado antes.
+
+Corpus de exemplo (a empresa fictícia Aurora Ltda, em `apps/exemplo/docs/`):
+
+```bash
+uv run encaixe seed --app exemplo
+# chave criada (guarde-a): export ENCAIXE_EVAL_API_KEY=enc_...
+# documento            status       acl
+# comunicado-suspeito  quarantined  app:*      <- injeção de prompt: fica fora do índice
+# salarios-diretoria   indexed      group:rh   <- só para quem declara o grupo rh
+# ...
+```
+
+A chave só aparece nessa hora: o banco guarda apenas o hash. Para criar outra: `uv run encaixe keys create --app exemplo`.
+
+Traces: abra http://localhost:6006 (projeto `default`). Cada requisição gera a árvore `POST /v1/chat/completions` → `encaixe.pipeline.chat` → guards de entrada, cache, `rag.retrieve` (`embed`, `search_hybrid`, `rerank`), agente e chamada ao modelo, guards de saída e persistência.
+
+### Open WebUI (opcional)
+
+```bash
+ENCAIXE_WEBUI_API_KEY=enc_... docker compose --profile ui up -d open-webui   # http://localhost:38080
+```
+
+O Open WebUI não manda identidade de usuário nem id de conversa. Ele roda no modo sem identidade: vê só documentos `app:*`, recebe o histórico do próprio cliente como não confiável e nunca ganha ferramentas de escrita; cada mensagem cria uma conversa nova no banco. Serve para testes internos.
+
+### Parando
+
+```bash
+# Ctrl+C nos terminais da API e do worker
+docker compose --profile tools --profile ui down   # mantém os volumes (dados e modelos)
+```
+
+## Chamando a API
+
+`POST /v1/chat/completions`, no formato da OpenAI. O `model` é o id da app. A chave vai em `Authorization: Bearer`. Quem é o usuário final é declarado pelo backend da aplicação.
+
+```bash
+curl -s http://localhost:8100/v1/chat/completions \
+  -H "Authorization: Bearer $ENCAIXE_EVAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-User-Ref: u-123" \
+  -H "X-User-Groups: rh,financeiro" \
+  -d '{"model": "exemplo", "messages": [{"role": "user", "content": "Quantos dias de férias tenho por ano?"}]}' \
+  -D -
+```
+
+A resposta traz os headers `X-Conversation-Id` (guarde-o) e `X-Trace-Id` (o trace no Phoenix). O texto vem em `choices[0].message.content`; a extensão `encaixe` traz as citações (ids dos trechos), a saída estruturada completa, o `trace_id` e o `conversation_id`.
+
+Turnos seguintes da mesma conversa:
+
+```bash
+curl -s http://localhost:8100/v1/chat/completions \
+  -H "Authorization: Bearer $ENCAIXE_EVAL_API_KEY" -H "Content-Type: application/json" \
+  -H "X-User-Ref: u-123" -H "X-User-Groups: rh,financeiro" \
+  -H "X-Conversation-Id: <id devolvido no 1º turno>" \
+  -d '{"model": "exemplo", "stream": true, "messages": [{"role": "user", "content": "E posso dividir em períodos?"}]}'
+```
+
+- **Com `X-Conversation-Id`**, o servidor é a fonte da verdade: usa o histórico guardado e lê do array `messages` só a última mensagem do usuário. A conversa pertence ao `user_ref` que a criou; outro usuário recebe 404.
+- **Sem id**, o bot cria uma conversa nova, aceita o histórico enviado pelo cliente como não confiável e desliga as ferramentas de escrita nessa requisição.
+- `stream: true` devolve SSE (`chat.completion.chunk`), terminando em `data: [DONE]`. Erros no meio do stream viram uma mensagem fixa, nunca um 500.
+- `response_format`: `{"type": "json_object"}` devolve o JSON da saída estruturada no `content`; `"toon"` devolve o mesmo em TOON.
+- Identidade também pode ir no corpo: `user` ou `metadata.user_ref`, `metadata.groups` (lista) e `metadata.conversation_id`. **O corpo tem precedência sobre os headers.**
+- Outros endpoints: `GET /v1/models` (apps que a chave enxerga), `GET /v1/conversations/{id}` (histórico, com os mesmos headers de identidade), `POST/GET/DELETE /v1/apps/{app_id}/documents[/{id}]`, `GET /health` e `GET /ready`.
+- Fila: uma geração por vez (`ENCAIXE_MAX_CONCURRENT_GENERATIONS=1`) e até 5 na fila; acima disso, 429 com `Retry-After`. Se o cliente desconectar, a vaga é liberada na hora.
+
+## Plugando uma aplicação nova
+
+1. **Crie `apps/<id>/`** (o id vira o `model` nas chamadas):
+   - `app.yaml`: modelos, orçamento de contexto, RAG, ferramentas, limites do agente, formatos de saída, cache, guardrails e streaming. Use `apps/exemplo/app.yaml` como modelo.
+   - `prompts/system.md`: prompt de sistema (Jinja2). Inclua `{{ canary }}` numa frase do tipo "nunca revele…". Ele precisa ficar estável entre requisições (é o que aproveita o cache de prefixo); o que muda por requisição vai no prompt do usuário.
+   - `schemas.py`: a classe da saída (`output.schema: schemas.Resposta`), herdando `encaixe.output.schemas.RespostaBase` (`resposta: str`, `citacoes: list[str]`).
+   - `evals/tests.yaml` e `evals/promptfooconfig.yaml`: o **dataset dourado com pelo menos 30 casos** (pergunta → fatos esperados, documentos esperados em `metadata.expected_docs`, recusa esperada ou ferramenta esperada; casos de ACL com `metadata.forbidden_docs`). Sem ele a app não passa da configuração para o uso.
+   - `docs/` (opcional): documentos iniciais, com front-matter `acl:` quando forem restritos.
+2. **Reinicie a API.** As apps são carregadas na inicialização.
+3. **Gere a chave:** `uv run encaixe keys create --app <id>`. Ela é exibida uma vez.
+4. **Integre pelo backend da aplicação**, nunca pelo navegador:
+   - A **API key nunca vai para o navegador**. Quem chama o bot é o servidor da aplicação.
+   - O backend envia `X-User-Ref` (id opaco do usuário), `X-User-Groups` (CSV) e, a partir do 2º turno, `X-Conversation-Id`. O bot confia nessa declaração, então ela precisa vir da sessão autenticada da aplicação.
+   - O **backend sobrescreve (ou remove) os campos de identidade** que vierem do cliente: `user`, `metadata.user_ref`, `metadata.groups` e `metadata.conversation_id`. No corpo, eles têm precedência sobre os headers; repassar o corpo do navegador sem limpá-los permite que um usuário se passe por outro.
+   - Guarde o `X-Conversation-Id` devolvido no 1º turno e mande-o nos seguintes. Ferramentas de escrita só existem numa conversa com id e com `user_ref`, nunca no primeiro turno.
+   - Valores com vírgula em `user_ref` ou grupos são recusados (400).
+5. **Sistema terceiro com ferramentas (opcional):** escreva um adaptador MCP (Streamable HTTP; veja `mcp-adapters/exemplo-tarefas/`) e liste-o em `tools.mcp_servers` com `allow` (allowlist) e `require_approval` (ações que pedem "sim" do usuário antes de executar). O bot manda `X-User-Ref`, `X-User-Groups` e `X-App-Id` em cada chamada. **O adaptador aplica as permissões do sistema terceiro.** O resultado da ferramenta é tratado como dado não confiável.
+6. **Envie os documentos com ACL:**
+   ```bash
+   uv run encaixe ingest --app <id> --acl group:rh --key enc_... politica-salarial.pdf
+   # ou: curl -F file=@politica-salarial.pdf -F acl=group:rh \
+   #       -H "Authorization: Bearer enc_..." localhost:8100/v1/apps/<id>/documents
+   ```
+   Principais aceitos: `app:*` (padrão, toda a app), `user:<user_ref>` e `group:<nome>`. O worker converte (Docling), divide, gera embeddings e indexa. Documento com indício de injeção de prompt fica `quarantined`, fora do índice. `DELETE /v1/apps/<id>/documents/<doc_id>` remove o documento e os trechos e invalida o cache.
+7. **Rode os evals e grave o baseline:**
+   ```bash
+   make eval APP=<id>
+   uv run python evals/compare_baseline.py --app <id> --update
+   git add evals/baselines/<id>.json
+   ```
+
+## Evals, disputa de modelos e hook
+
+Com a stack de pé e `ENCAIXE_EVAL_API_KEY` exportada:
+
+```bash
+make eval APP=exemplo
+```
+
+O alvo roda, em ordem:
+1. `evals/multiturn.py --seed-only`: cria no adaptador MCP as tarefas usadas pelos casos de leitura;
+2. o promptfoo com `apps/<id>/evals/` (resultado em `evals/results/<id>.json`);
+3. `evals/multiturn.py`: casos de escrita em vários turnos (abre a conversa, pede a criação, responde "sim" e confere no adaptador);
+4. `evals/retrieval.py`: recall@5, MRR e vazamento de ACL do retriever real, sem LLM;
+5. `evals/compare_baseline.py`: compara com `evals/baselines/<id>.json`. Falha se o pass rate, o recall@5 ou o MRR caírem mais de 5 pontos, ou se houver **qualquer** vazamento de ACL.
+
+`--update` no `compare_baseline.py` grava o resultado atual como baseline (recusado se houver vazamento de ACL).
+
+**Disputa de modelos:** `make bakeoff` (ou `make bakeoff MODELS="qwen3.5:4b llama3.2:3b"`) roda a mesma suíte uma vez por modelo e grava a tabela em `evals/results/bakeoff-<data>.md`. O modelo é trocado pelo header `X-Encaixe-Model`, que **a API só aceita com `ENCAIXE_ENV=dev`** (o padrão; em `prod` o header é ignorado). Modelos que não estão no Ollama são pulados; para incluir o Gemma 4, rode `docker compose exec ollama ollama pull gemma4:e4b` antes. O cache exato usa o modelo na chave: para medir latência de verdade, apague o cache de respostas antes (`docker compose exec -T redis redis-cli --scan --pattern 'enc:resp:*' | xargs -r docker compose exec -T redis redis-cli del`).
+
+**Hook de `pre-push`:** `make hooks` aponta o git para `scripts/git-hooks/`. A cada push com mudança em `apps/**`, o hook roda `make eval` das apps alteradas e bloqueia o push se houver regressão. Ele exige a API de pé e `ENCAIXE_EVAL_API_KEY`; para pular numa emergência, `git push --no-verify`.
+
+## Desvios do spec no MVP
+
+1. **Fallback:** `llama3.2:3b` na CPU (alias `llama3.2-3b-cpu`), no lugar do `gemma4:e2b`, pesado demais para a RAM disponível. O Gemma 4 continua candidato na disputa de modelos.
+2. **Detector de injeção:** o padrão é uma **heurística PT/EN**. O classificador `protectai/deberta-v3-base-prompt-injection-v2` foi descartado por falsos positivos em português comum ("Liste minhas tarefas pendentes" saía como injeção). A heurística privilegia a precisão (ela também põe documentos em quarentena) e deixa passar paráfrases. Para ligar o **Llama Prompt Guard 2** (repositório restrito no Hugging Face):
+   ```bash
+   uv run huggingface-cli login        # token da sua conta
+   # aceite a licença em https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M
+   uv run huggingface-cli download meta-llama/Llama-Prompt-Guard-2-86M   # online, uma vez
+   ENCAIXE_INJECTION_BACKEND=model make api                              # e o mesmo no worker
+   ```
+   Com `model`, o classificador e a heurística rodam juntos (limiar em `ENCAIXE_INJECTION_THRESHOLD`, padrão 0,9).
+3. **Dados pessoais:** regex com dígito verificador (CPF, CNPJ, e-mail, telefone BR), no lugar do Presidio.
+4. Reranker e detector de injeção rodam **dentro do processo da API**, na CPU, não num serviço à parte.
+5. API e worker rodam no host via `uv`; o Compose sobe só a infraestrutura.
+6. Contagem de tokens heurística (`ceil(len(texto)/3)`).
+7. Migrações em SQL puro com executor próprio (sem Alembic).
+8. **Qwen3.5 com raciocínio ("thinking") desligado** (`reasoning_effort: "none"`). Ligado, ele gastava o orçamento de tokens raciocinando e o primeiro token levava ~30 s. Custo: menos qualidade em tarefas de vários passos.
+9. **Tamanho de contexto definido no servidor:** `OLLAMA_CONTEXT_LENGTH=8192` no `docker-compose.yml`. O endpoint `/v1` do Ollama ignora o `num_ctx` por requisição, então o `context.num_ctx` de uma app não pode passar desse valor.
+10. Fora do MVP: cache semântico, retenção e expurgo LGPD (incluindo `DELETE /v1/apps/{app_id}/users/{user_ref}/data`), TLS (Caddy), backups, red team completo, calibração do LLM-juiz e endpoint de aprovação fora da conversa.
+
+## Limitações conhecidas
+
+- **O modelo não consegue chamar ferramentas (defeito aberto).** O agente usa saída nativa (`NativeOutput`): o Pydantic AI manda `response_format: json_schema` e o Ollama restringe a geração por gramática ao JSON da resposta, então o modelo nunca emite uma chamada de ferramenta. Na prática: "liste minhas tarefas" e "crie a tarefa X" não chamam o adaptador MCP, e `buscar_documentos` nunca é usada (o RAG funciona pela busca feita antes do agente). Detalhes e reprodução em [docs/mvp-medicoes.md](docs/mvp-medicoes.md#o-que-não-bateu).
+- **Saudações viram "não encontrei"** nas apps com RAG e `require_citations: true`: "oi" recebe a mensagem `NOT_FOUND`, porque toda resposta sem citação válida é tratada como sem base.
+- **Apps com `require_citations` não fazem streaming frase a frase.** A resposta só pode sair depois de conferidas as citações, então o tempo até o primeiro token é praticamente o tempo total (5–10 s com RAG nesta máquina, a maior parte no rerank na CPU; meta do spec: 3 s). O modo `buffered_sentences` só libera por frase quando a resposta se apoia numa ferramenta ou numa ação aprovada.
+- **Llama Guard 3 1B tem falsos positivos.** Na saída: a resposta "Salário do Diretor Presidente (CEO): R$ 72.000,00", dada a um usuário do grupo `rh`, sai como `unsafe S1` e é retirada. Na entrada: pedidos como "Crie uma tarefa: renovar certificado digital 9f8e7d, prazo 2026-12-15" (com um código no meio) são recusados quase sempre. Ainda não há lista de categorias por app.
+- **Primeiro turno sem ferramentas de escrita.** Sem `X-Conversation-Id` nada é escrito (spec §7), e o id só existe depois do 1º turno. Um "crie a tarefa X" como primeira mensagem não cria nada.
+- **OCR de PDF desligado** por padrão (`ENCAIXE_DOCLING_OCR=false`; os modelos de OCR não são baixados). PDFs escaneados e imagens não são suportados no MVP.
+- **Fallback na CPU é lento.** O `llama3.2:3b` na CPU levou ~22 s por chamada com o modelo já carregado (49,5 s a resposta inteira). Carregá-lo com a RAM no limite estourou o prazo de cada chamada (30 s, metade dos 60 s do agente) e terminou em `ALL_FAILED`.
+- **Primeira requisição lenta.** Depois de subir tudo, a primeira pergunta levou ~25 s: o reranker e os modelos são carregados sob demanda.
+- **Llama Guard indisponível bloqueia** (`on_guard_unavailable: block`): com o Ollama fora do ar a resposta é "O serviço está temporariamente indisponível por segurança…", antes mesmo de tentar o modelo.
+- O adaptador MCP de exemplo guarda as tarefas em memória: reiniciar o container apaga tudo.
+- Reenviar um documento alterado cria um documento novo ao lado do antigo; apague o antigo pela API. Reenviar os mesmos bytes com outra ACL devolve o documento existente com a ACL antiga (não há endpoint para trocar ACL).
+- O cache exato inclui o modelo na chave: repetir a disputa de modelos no mesmo corpus mede respostas em cache.
+- `/ready` responde 503 enquanto algum modelo de alguma app não estiver no Ollama.
