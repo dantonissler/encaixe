@@ -67,6 +67,13 @@ def grounded_elsewhere(ctx: RequestContext) -> bool:
     return bool(ctx.extra_context) or any(t != RAG_TOOL for t in ctx.tools_called)
 
 
+def text_answer_allowed(ctx: RequestContext) -> bool:
+    """Resposta em texto puro (fora da ferramenta `responder`) vale, com `citacoes` vazia,
+    quando o turno não precisa de citação: app sem RAG, ou resposta apoiada numa ferramenta
+    MCP ou numa ação aprovada (`grounded_elsewhere`). Avaliado na hora da resposta."""
+    return not ctx.app.config.rag.enabled or grounded_elsewhere(ctx)
+
+
 def may_become_not_found(ctx: RequestContext) -> bool:
     """A resposta final ainda pode virar NOT_FOUND (então nada é liberado antes do fim).
 

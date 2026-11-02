@@ -5,10 +5,9 @@ from dataclasses import dataclass
 import jinja2
 import pytest
 from pydantic_ai.exceptions import UsageLimitExceeded
-from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.toolsets import FunctionToolset
 
 from encaixe.agent.factory import (
@@ -20,7 +19,7 @@ from encaixe.agent.factory import (
 from encaixe.agent.loop_guard import LoopDetected
 from encaixe.core.config import AgentConfig, AppConfig, ContextConfig, LoadedApp, ModelsConfig
 from encaixe.messages import LIMIT_REACHED
-from encaixe.output.schemas import RespostaBase
+from encaixe.output.schemas import OUTPUT_TOOL, TEXT_ANSWER_RETRY, RespostaBase
 
 
 @dataclass
@@ -46,15 +45,87 @@ def make_app(fallbacks: list[str] | None = None, **agent) -> LoadedApp:
 
 async def test_structured_output_validated():
     app = make_app()
-    # NativeOutput: TestModel só aceita custom_output_args em modo tool; em nativo, usa texto JSON.
-    model = TestModel(
-        custom_output_text='{"resposta": "ok", "citacoes": []}',
-        profile=ModelProfile(supports_json_schema_output=True),
-    )
+    # Saída por ferramenta (ToolOutput): o modelo entrega a resposta chamando `responder`.
+    model = TestModel(custom_output_args={"resposta": "ok", "citacoes": []})
     agent = build_agent(app, model, [])
     result = await agent.run("oi", deps=StubDeps(), instructions="sys")
     assert result.output.resposta == "ok"
     assert isinstance(result.output, app.output_model)
+
+
+async def test_output_is_a_tool_so_the_model_can_still_call_tools():
+    """Com saída nativa (gramática do Ollama) o modelo nunca chamava ferramentas (D1 da
+    Task 15). A saída precisa ser uma ferramenta, oferecida junto com as da app."""
+    app = make_app()
+    ts = FunctionToolset()
+
+    @ts.tool_plain
+    def listar_tarefas() -> str:
+        return "tarefa a"
+
+    seen: list[dict] = []
+
+    def fn(messages, info):
+        params = info.model_request_parameters
+        seen.append(
+            {
+                "tools": sorted(t.name for t in info.function_tools),
+                "outputs": [t.name for t in info.output_tools],
+                # nada de schema nativo (`response_format`): no Ollama ele vira gramática
+                "native_schema": params.output_object is not None,
+                "mode": params.output_mode,
+            }
+        )
+        if len(seen) == 1:
+            return ModelResponse(parts=[ToolCallPart("listar_tarefas", {})])
+        args = {"resposta": "Você tem: tarefa a", "citacoes": []}
+        return ModelResponse(parts=[ToolCallPart(OUTPUT_TOOL, args)])
+
+    agent = build_agent(app, FunctionModel(fn), [ts])
+    result = await agent.run("liste minhas tarefas", deps=StubDeps())
+    assert result.output.resposta == "Você tem: tarefa a"
+    assert seen[0] == {
+        "tools": ["listar_tarefas"],
+        "outputs": [OUTPUT_TOOL],
+        "native_schema": False,
+        "mode": "tool",
+    }
+    assert len(seen) == 2
+
+
+async def test_text_answer_wrapped_without_citations_when_allowed():
+    """Depois de uma ferramenta MCP (ex.: aprovação pendente) o Qwen responde em texto puro em
+    ~7 de 9 vezes; forçado a repetir pela ferramenta de saída, às vezes inventava "Tarefa
+    criada com sucesso". Quando o turno não precisa de citação, o texto vale como resposta."""
+    app = make_app()
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart("Confirma a criação? Responda sim ou não.")])
+
+    agent = build_agent(app, FunctionModel(fn), [], accept_text=lambda: True)
+    result = await agent.run("crie a tarefa", deps=StubDeps())
+    assert isinstance(result.output, app.output_model)
+    assert result.output.resposta == "Confirma a criação? Responda sim ou não."
+    assert result.output.citacoes == []
+
+
+async def test_text_answer_retried_in_portuguese_when_citations_may_be_needed():
+    app = make_app()
+    calls: list[list] = []
+
+    def fn(messages, info):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return ModelResponse(parts=[TextPart("São 30 dias.")])
+        args = {"resposta": "São 30 dias.", "citacoes": ["T1"]}
+        return ModelResponse(parts=[ToolCallPart(OUTPUT_TOOL, args)])
+
+    agent = build_agent(app, FunctionModel(fn), [])  # padrão: texto puro não vale
+    result = await agent.run("férias?", deps=StubDeps())
+    assert result.output.citacoes == ["T1"]
+    assert len(calls) == 2
+    feedback = calls[1][-1].parts[-1]  # retorno de validação que o modelo recebe
+    assert TEXT_ANSWER_RETRY in str(feedback.content)
 
 
 def test_settings_and_limits():
@@ -109,3 +180,29 @@ def test_model_request_timeout_leaves_room_for_fallbacks(timeout_s, fallbacks, e
     app = make_app(fallbacks=fallbacks, timeout_s=timeout_s)
     assert model_request_timeout(app) == expected
     assert build_agent(app, TestModel(), []).model_settings["timeout"] == expected
+
+
+@pytest.mark.parametrize(
+    "leaked",
+    [
+        'Você tem 2 tarefas.\n<tool_use>\n<parameter=tool_name>\nresponder\n</parameter>',
+        'Pronto.\n<tool_call>\n{"name": "responder", "arguments": {}}\n</tool_call>',
+        "Ok. <function=listar_tarefas></function>",
+    ],
+)
+async def test_tool_call_markup_in_text_is_retried_even_when_text_allowed(leaked):
+    """Visto ao vivo: o Qwen escreveu a chamada de `responder` como texto (formato que o Ollama
+    não reconheceu). Isso não é resposta: volta ao modelo como nova tentativa."""
+    app = make_app()
+    calls: list[list] = []
+
+    def fn(messages, info):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return ModelResponse(parts=[TextPart(leaked)])
+        return ModelResponse(parts=[ToolCallPart(OUTPUT_TOOL, {"resposta": "Ok.", "citacoes": []})])
+
+    agent = build_agent(app, FunctionModel(fn), [], accept_text=lambda: True)
+    result = await agent.run("x", deps=StubDeps())
+    assert len(calls) == 2
+    assert result.output.resposta == "Ok."

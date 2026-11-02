@@ -6,6 +6,8 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
 from encaixe.core.types import GuardResult
+from encaixe.messages import APPROVAL_PROMPT
+from encaixe.output.schemas import OUTPUT_TOOL
 from encaixe.tools.approvals import ApprovalService
 from encaixe.tools.mcp import build_mcp_toolsets
 from encaixe.tools.native import AgentDeps
@@ -116,6 +118,21 @@ async def test_write_tool_replaced_by_approval_request():
     assert repo.rows[0]["server"] == "tarefas" and repo.rows[0]["user_ref"] == "u1"
     out = returns(res)[0]
     assert "confirmação" in out and "criar_tarefa(titulo='X')" in out
+
+
+async def test_approval_result_tells_model_action_not_run_and_to_finish_with_responder():
+    """Turno de escrita do Task 15 (D1): depois do "pendente" o modelo respondia em texto
+    (rejeitado, não é a ferramenta de saída) ou chamava criar_tarefa de novo, até esgotar as
+    tentativas. O resultado precisa dizer que nada foi executado, que não deve repetir a
+    chamada e que deve terminar chamando `responder` com a pergunta de confirmação."""
+    ctx = make_ctx()
+    agent = Agent(calling_model("criar_tarefa", {"titulo": "X"}), toolsets=build(ctx, make_server([])), deps_type=AgentDeps)
+    out = returns(await agent.run("x", deps=mk_deps(ctx)))[0]
+    assert "NÃO foi executada" in out
+    assert "Não chame criar_tarefa de novo" in out
+    assert f"chamando a ferramenta {OUTPUT_TOOL}" in out
+    # a pergunta que o usuário deve receber vem inteira, pronta para ser repetida
+    assert APPROVAL_PROMPT.format(acao="criar_tarefa(titulo='X')") in out
 
 
 async def test_read_tool_wrapped_and_recorded():

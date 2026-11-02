@@ -37,6 +37,7 @@ from encaixe.pipeline.stages import (
     primary_model_name,
     span_attr,
     static_output,
+    text_answer_allowed,
 )
 from encaixe.tools.native import AgentDeps
 
@@ -243,7 +244,12 @@ class ChatPipeline:
     ) -> AsyncIterator[ChatEvent]:
         try:
             model, effective = self.deps.chain_factory(turn.model_spec, turn.fallbacks)
-            agent = build_agent(ctx.app, model, build_toolsets(ctx, self.deps.mcp_source))
+            agent = build_agent(
+                ctx.app,
+                model,
+                build_toolsets(ctx, self.deps.mcp_source),
+                accept_text=lambda: text_answer_allowed(ctx),
+            )
         except Exception as exc:  # noqa: BLE001 - modelo/ferramenta mal configurado
             log.error("agent_setup_failed", error=type(exc).__name__, detail=str(exc))
             turn.finish_static(ALL_FAILED)

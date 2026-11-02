@@ -8,7 +8,7 @@ from fastmcp import FastMCP
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from encaixe.api.auth import key_resolver
 from encaixe.core.config import McpServerConfig
@@ -18,6 +18,7 @@ from encaixe.llm.breaker import BreakerRegistry
 from encaixe.llm.fallback import build_chain
 from encaixe.messages import ALL_FAILED, QUEUE_WAIT, RETRACTION
 from encaixe.observability import spans
+from encaixe.output.schemas import OUTPUT_TOOL
 from encaixe.output.toon import from_toon, to_toon
 from encaixe.pipeline.gate import GenerationGate
 from encaixe.settings import Settings
@@ -428,9 +429,10 @@ class SlowModel:
         self.calls += 1
         if self.calls == 1:
             self.started.set()
-            yield '{"resposta": "Primeira frase. '
+            yield {0: DeltaToolCall(name=OUTPUT_TOOL, json_args='{"resposta": "Primeira frase. ')}
             await asyncio.sleep(60)
-        yield json.dumps(answer("Resposta rápida.", []))
+        args = json.dumps(answer("Resposta rápida.", []))
+        yield {0: DeltaToolCall(name=OUTPUT_TOOL, json_args=args)}
 
 
 async def test_client_disconnect_releases_slot():

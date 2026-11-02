@@ -33,7 +33,7 @@ from encaixe.core.types import (
     RequestContext,
     ScoredChunk,
 )
-from encaixe.output.schemas import RespostaBase
+from encaixe.output.schemas import OUTPUT_TOOL, RespostaBase
 from encaixe.pipeline.events import Final, TextDelta
 from encaixe.settings import Settings
 from encaixe.wiring import Deps
@@ -120,6 +120,13 @@ class Call:
     args: dict
 
 
+@dataclass
+class Raw:
+    """Passo do roteiro com argumentos crus (ex.: JSON truncado) para a ferramenta de saída."""
+
+    args: str
+
+
 class Script:
     """Modelo de teste (FunctionModel em streaming) que segue um roteiro e registra o que viu."""
 
@@ -143,10 +150,16 @@ class Script:
         if isinstance(step, Call):
             yield {0: DeltaToolCall(name=step.tool, json_args=json.dumps(step.args))}
             return
-        # str: texto cru (ex.: JSON inválido); dict: saída estruturada
-        text = step if isinstance(step, str) else json.dumps(step, ensure_ascii=False)
-        for i in range(0, len(text), self.chunk):
-            yield text[i : i + self.chunk]
+        if isinstance(step, str):  # resposta em texto puro (fora da ferramenta de saída)
+            for i in range(0, len(step), self.chunk):
+                yield step[i : i + self.chunk]
+            return
+        # dict: saída estruturada pela ferramenta `responder`, com os argumentos em pedaços;
+        # Raw: argumentos crus (ex.: JSON inválido)
+        args = step.args if isinstance(step, Raw) else json.dumps(step, ensure_ascii=False)
+        for i in range(0, len(args), self.chunk):
+            name = OUTPUT_TOOL if i == 0 else None
+            yield {0: DeltaToolCall(name=name, json_args=args[i : i + self.chunk])}
 
     @property
     def calls(self) -> int:

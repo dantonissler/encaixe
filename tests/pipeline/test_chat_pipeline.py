@@ -22,6 +22,7 @@ from encaixe.messages import (
     REFUSAL_INPUT,
     RETRACTION,
 )
+from encaixe.output.schemas import TEXT_ANSWER_RETRY
 from encaixe.pipeline.chat import ChatPipeline
 from encaixe.pipeline.events import Retraction, Status, TextDelta
 from encaixe.settings import Settings
@@ -33,6 +34,7 @@ from .helpers import (
     FakeCache,
     FakeHistory,
     FakeRetriever,
+    Raw,
     Script,
     answer,
     chunk,
@@ -536,7 +538,7 @@ async def test_breaker_open_reports_fallback_before_streaming():
 async def test_output_retry_after_release_emits_retraction():
     app = make_app(rag=False)
     invalid = '{"resposta": "Primeira versão. Ainda escrevendo", "outro": '  # JSON truncado
-    h = make_harness(app, Script(invalid, answer("Segunda versão.", []), chunk=3))
+    h = make_harness(app, Script(Raw(invalid), answer("Segunda versão.", []), chunk=3))
     events = await collect(ChatPipeline(h.deps), make_ctx(app))
     assert h.script.calls == 2  # nova tentativa de saída (run_stream não faria)
     assert [e.text for e in events if isinstance(e, TextDelta)] == ["Primeira versão. "]
@@ -813,3 +815,64 @@ async def test_closing_stream_early_cancels_agent():
         t for t in asyncio.all_tasks() if t.get_name().startswith("encaixe.agent") and not t.done()
     ]
     assert leftovers == []
+
+
+# --- resposta em texto puro (fora da ferramenta `responder`) --------------------------------
+
+
+async def test_text_answer_after_mcp_tool_is_accepted_and_released_by_sentence():
+    """Turno apoiado numa ferramenta MCP não precisa de citação: o texto puro vale como
+    resposta (sem nova tentativa) e sai frase a frase, token a token."""
+    server, mcp = tarefas_server()
+    app = make_app(mcp=mcp, output_guards=["citations"], cache=False)  # RAG + require_citations
+    text = "Você tem duas tarefas. A primeira vence hoje. A segunda, amanhã."
+    script = Script(Call("listar_tarefas", {}), text, chunk=3)
+    h = make_harness(app, script, mcp_source=lambda cfg, headers: server)
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, "quais são minhas tarefas?"))
+    assert script.calls == 2
+    out = final_of(events).output
+    assert out.resposta == text and out.citacoes == []
+    deltas = [e.text for e in events if isinstance(e, TextDelta)]
+    assert deltas[:2] == ["Você tem duas tarefas. ", "A primeira vence hoje. "]
+    assert "".join(deltas) == text
+
+
+async def test_text_answer_without_rag_is_accepted():
+    app = make_app(rag=False)
+    h = make_harness(app, Script("Primeira frase. Segunda frase.", chunk=3))
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, "oi"))
+    assert h.script.calls == 1
+    assert final_of(events).output.resposta == "Primeira frase. Segunda frase."
+    assert [e.text for e in events if isinstance(e, TextDelta)] == [
+        "Primeira frase. ",
+        "Segunda frase.",
+    ]
+
+
+async def test_text_answer_in_document_turn_is_retried_through_responder():
+    """Turno de documentos: texto puro perderia as citações, então o modelo é mandado de volta
+    à ferramenta `responder` (TEXT_ANSWER_RETRY) e a resposta citada é a que vale."""
+    app = make_app()  # RAG + require_citations, sem ferramentas
+    script = Script("São 30 dias corridos.", answer("São 30 dias corridos.", ["T1"]))
+    h = make_harness(app, script)
+    events = await collect(ChatPipeline(h.deps), make_ctx(app))
+    assert script.calls == 2
+    assert TEXT_ANSWER_RETRY in str(script.messages[1][-1].parts[-1].content)
+    out = final_of(events).output
+    assert out.resposta == "São 30 dias corridos." and out.citacoes == ["k1"]
+
+
+async def test_tool_call_markup_in_text_never_reaches_the_stream():
+    server, mcp = tarefas_server()
+    app = make_app(mcp=mcp, cache=False)
+    leaked = "Você tem duas tarefas. A primeira vence hoje.\n<tool_use>\n<parameter=tool_name>\n"
+    final = answer("Você tem duas tarefas. A primeira vence hoje. A segunda, amanhã.", [])
+    script = Script(Call("listar_tarefas", {}), leaked, final, chunk=3)
+    h = make_harness(app, script, mcp_source=lambda cfg, headers: server)
+    events = await collect(ChatPipeline(h.deps), make_ctx(app, "quais são minhas tarefas?"))
+    assert script.calls == 3
+    assert "<tool_use>" not in str(events) and "<parameter" not in str(events)
+    assert final_of(events).output.resposta == final["resposta"]
+    # o já liberado ("…hoje.\n") não é prefixo da resposta nova: retratação com o texto certo
+    assert text_of(events) == "Você tem duas tarefas. A primeira vence hoje.\n"
+    assert Retraction(final["resposta"]) in events

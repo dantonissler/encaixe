@@ -11,8 +11,9 @@ from pydantic_ai.toolsets import AbstractToolset, WrapperToolset
 
 from encaixe.core.config import LoadedApp, McpServerConfig
 from encaixe.core.types import RequestContext
-from encaixe.messages import APPROVAL_PROMPT
+from encaixe.messages import APPROVAL_PENDING_RESULT
 from encaixe.observability.spans import traced
+from encaixe.output.schemas import OUTPUT_TOOL
 from encaixe.tools.approvals import identity_headers
 from encaixe.tools.native import AgentDeps
 from encaixe.tools.results import UNAVAILABLE, sanitize_tool_result
@@ -41,7 +42,9 @@ class McpGuardToolset(WrapperToolset[AgentDeps]):
             with traced("tool.mcp.approval_request", tool=name):
                 await deps.approvals.request(deps.ctx, self.server, name, tool_args)
             deps.ctx.tools_called.append(f"{name}:pendente")
-            return APPROVAL_PROMPT.format(acao=_describe(name, tool_args))
+            return APPROVAL_PENDING_RESULT.format(
+                acao=_describe(name, tool_args), ferramenta=name, saida=OUTPUT_TOOL
+            )
         with traced("tool.mcp.call", tool=name, server=self.server) as span:
             try:
                 result = await super().call_tool(name, tool_args, ctx, tool)
