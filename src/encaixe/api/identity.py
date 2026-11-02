@@ -41,31 +41,65 @@ def _groups(value: Any, field: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(g.strip() for g in items if g.strip()))
 
 
+def _body_user_ref(body: Any | None, metadata: dict) -> str | None:
+    """`user` → `metadata.user_ref` (o primeiro não vazio)."""
+    return _text(getattr(body, "user", None), "user") or _text(
+        metadata.get("user_ref"), "metadata.user_ref"
+    )
+
+
+def _check_agrees(header: str, field: str, from_header: object, from_body: object) -> None:
+    if from_body != from_header:
+        raise _bad(f"'{field}' no corpo diverge do header {header}.")
+
+
 def resolve_identity(
     request: Request, body: Any | None = None
 ) -> tuple[Principals, str | None, str | None]:
     """(principais, conversation_id, model_override) da requisição.
 
-    `user_ref`: `body.user` → `body.metadata.user_ref` → header `X-User-Ref`.
-    Grupos: `body.metadata.groups` (lista) → header `X-User-Groups` (CSV).
-    `conversation_id`: header `X-Conversation-Id` → `body.metadata.conversation_id`.
+    Os headers (postos pelo backend da app) vencem. Header presente, mesmo em branco, é a
+    declaração do backend: campo de identidade do corpo que diverge dele → 400 (o corpo pode
+    vir do navegador). O corpo só vale quando o header está ausente:
+    `user_ref`: `X-User-Ref`, senão `body.user` → `body.metadata.user_ref`.
+    Grupos: `X-User-Groups` (CSV), senão `body.metadata.groups` (lista ou CSV).
+    `conversation_id`: `X-Conversation-Id`, senão `body.metadata.conversation_id`.
     `model_override`: header `X-Encaixe-Model` (o pipeline só o aceita em dev).
     Valor com vírgula (injetaria principais extras) → 400.
     """
     metadata = getattr(body, "metadata", None) or {}
     headers = request.headers
-    user_ref = (
-        _text(getattr(body, "user", None), "user")
-        or _text(metadata.get("user_ref"), "metadata.user_ref")
-        or _text(headers.get("x-user-ref"), "X-User-Ref")
-    )
-    if metadata.get("groups") is not None:
-        groups = _groups(metadata["groups"], "metadata.groups")
+
+    if (raw := headers.get("x-user-ref")) is not None:
+        user_ref = _text(raw, "X-User-Ref")
+        for field, value in (
+            ("user", getattr(body, "user", None)),
+            ("metadata.user_ref", metadata.get("user_ref")),
+        ):
+            if (other := _text(value, field)) is not None:
+                _check_agrees("X-User-Ref", field, user_ref, other)
     else:
-        groups = _groups(headers.get("x-user-groups"), "X-User-Groups")
-    conversation_id = _text(headers.get("x-conversation-id"), "X-Conversation-Id") or _text(
-        metadata.get("conversation_id"), "metadata.conversation_id"
-    )
+        user_ref = _body_user_ref(body, metadata)
+
+    body_groups = metadata.get("groups")
+    if (raw := headers.get("x-user-groups")) is not None:
+        groups = _groups(raw, "X-User-Groups")
+        if body_groups is not None:
+            declared = set(_groups(body_groups, "metadata.groups"))
+            _check_agrees("X-User-Groups", "metadata.groups", set(groups), declared)
+    else:
+        groups = _groups(body_groups, "metadata.groups")
+
+    body_cid = _text(metadata.get("conversation_id"), "metadata.conversation_id")
+    if (raw := headers.get("x-conversation-id")) is not None:
+        conversation_id = _text(raw, "X-Conversation-Id")
+        if body_cid is not None:
+            _check_agrees(
+                "X-Conversation-Id", "metadata.conversation_id", conversation_id, body_cid
+            )
+    else:
+        conversation_id = body_cid
+
     model_override = _text(headers.get("x-encaixe-model"), "X-Encaixe-Model")
     try:
         principals = Principals(user_ref, groups)

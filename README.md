@@ -137,7 +137,7 @@ curl -s http://localhost:8100/v1/chat/completions \
 - **Sem id**, o bot cria uma conversa nova, aceita o histórico enviado pelo cliente como não confiável e desliga as ferramentas de escrita nessa requisição.
 - `stream: true` devolve SSE (`chat.completion.chunk`), terminando em `data: [DONE]`. Erros no meio do stream viram uma mensagem fixa, nunca um 500.
 - `response_format`: `{"type": "json_object"}` devolve o JSON da saída estruturada no `content`; `"toon"` devolve o mesmo em TOON.
-- Identidade também pode ir no corpo: `user` ou `metadata.user_ref`, `metadata.groups` (lista) e `metadata.conversation_id`. **O corpo tem precedência sobre os headers.**
+- Identidade também pode ir no corpo: `user` ou `metadata.user_ref`, `metadata.groups` (lista) e `metadata.conversation_id`. **Os headers vencem:** o corpo só vale quando o header correspondente não veio. Com o header presente (mesmo vazio), um campo do corpo que divirja dele é recusado (400).
 - Outros endpoints: `GET /v1/models` (apps que a chave enxerga), `GET /v1/conversations/{id}` (histórico, com os mesmos headers de identidade), `POST/GET/DELETE /v1/apps/{app_id}/documents[/{id}]`, `GET /health` e `GET /ready`.
 - Fila: uma geração por vez (`ENCAIXE_MAX_CONCURRENT_GENERATIONS=1`) e até 5 na fila; acima disso, 429 com `Retry-After`. Se o cliente desconectar, a vaga é liberada na hora.
 
@@ -154,7 +154,7 @@ curl -s http://localhost:8100/v1/chat/completions \
 4. **Integre pelo backend da aplicação**, nunca pelo navegador:
    - A **API key nunca vai para o navegador**. Quem chama o bot é o servidor da aplicação.
    - O backend envia `X-User-Ref` (id opaco do usuário), `X-User-Groups` (CSV) e, a partir do 2º turno, `X-Conversation-Id`. O bot confia nessa declaração, então ela precisa vir da sessão autenticada da aplicação.
-   - O **backend sobrescreve (ou remove) os campos de identidade** que vierem do cliente: `user`, `metadata.user_ref`, `metadata.groups` e `metadata.conversation_id`. No corpo, eles têm precedência sobre os headers; repassar o corpo do navegador sem limpá-los permite que um usuário se passe por outro.
+   - O **backend manda sempre `X-User-Ref` e `X-User-Groups`**, vazios quando o usuário é anônimo ou não tem grupos. Header presente vence o corpo, e um `user`, `metadata.user_ref` ou `metadata.groups` do corpo que divirja dele é recusado (400). Sem o header, vale o que vier no corpo: repassar o corpo do navegador sem os headers permite que um usuário se passe por outro. O mesmo vale para `X-Conversation-Id` × `metadata.conversation_id`.
    - Guarde o `X-Conversation-Id` devolvido no 1º turno e mande-o nos seguintes. Ferramentas de escrita só existem numa conversa com id e com `user_ref`, nunca no primeiro turno.
    - Valores com vírgula em `user_ref` ou grupos são recusados (400).
 5. **Sistema terceiro com ferramentas (opcional):** escreva um adaptador MCP (Streamable HTTP; veja `mcp-adapters/exemplo-tarefas/`) e liste-o em `tools.mcp_servers` com `allow` (allowlist) e `require_approval` (ações que pedem "sim" do usuário antes de executar). O bot manda `X-User-Ref`, `X-User-Groups` e `X-App-Id` em cada chamada. **O adaptador aplica as permissões do sistema terceiro.** O resultado da ferramenta é tratado como dado não confiável.
