@@ -5,6 +5,7 @@ from typing import Any
 
 import structlog
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, WrapperToolset
@@ -48,6 +49,15 @@ class McpGuardToolset(WrapperToolset[AgentDeps]):
         with traced("tool.mcp.call", tool=name, server=self.server) as span:
             try:
                 result = await super().call_tool(name, tool_args, ctx, tool)
+            except ModelRetry as exc:
+                # Erro da ferramenta (ex.: argumento inválido): o modelo corrige e tenta de novo.
+                # Sem orçamento, o Pydantic AI encerraria a execução; aí vira "indisponível".
+                if ctx.retry < tool.max_retries:
+                    raise
+                log.warning("mcp_tool_retries_exhausted", tool=name, server=self.server, error=exc.message)
+                if span is not None:
+                    span.set_attribute("tool.retries_exhausted", True)
+                return UNAVAILABLE
             except Exception as exc:  # noqa: BLE001 (CancelledError não é Exception)
                 log.warning("mcp_tool_unavailable", tool=name, server=self.server, error=type(exc).__name__)
                 if span is not None:

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.toolsets import FunctionToolset
+from structlog.testing import capture_logs
 
 from encaixe.core.types import GuardResult
 from encaixe.messages import APPROVAL_PROMPT
 from encaixe.output.schemas import OUTPUT_TOOL
 from encaixe.tools.approvals import ApprovalService
-from encaixe.tools.mcp import build_mcp_toolsets
+from encaixe.tools.mcp import McpGuardToolset, build_mcp_toolsets
 from encaixe.tools.native import AgentDeps
+from encaixe.tools.results import UNAVAILABLE
 
 from .helpers import FakeApprovalRepo, make_ctx
 
@@ -153,20 +157,83 @@ async def test_tool_result_injection_blocked():
 
 
 async def test_server_down_returns_unavailable_and_run_completes():
-    ctx = make_ctx()
-    server = make_server([])
+    """Falha de conexão na chamada (não é erro da ferramenta): vira "indisponível" e o turno segue."""
+    ctx = make_ctx(allow=["quebrada"], require_approval=[])
+    inner = FunctionToolset()
 
-    @server.tool
+    @inner.tool_plain
     def quebrada() -> str:
         """Falha."""
         raise ConnectionError("down")
 
-    ctx = make_ctx(allow=["quebrada"], require_approval=[])
-    agent = Agent(calling_model("quebrada", {}), toolsets=build(ctx, server), deps_type=AgentDeps)
-    res = await agent.run("x", deps=mk_deps(ctx))
+    toolset = McpGuardToolset(inner, "tarefas", set())
+    agent = Agent(calling_model("quebrada", {}), toolsets=[toolset], deps_type=AgentDeps)
+    with capture_logs() as logs:
+        res = await agent.run("x", deps=mk_deps(ctx))
     assert res.output == "fim"
-    assert returns(res) == ["[ferramenta indisponível no momento]"] or "indisponível" in str(returns(res))
+    assert returns(res) == [UNAVAILABLE]
     assert ctx.tools_called == []
+    assert [e["event"] for e in logs] == ["mcp_tool_unavailable"]
+
+
+def validating_server(calls: list):
+    s = FastMCP("t")
+
+    @s.tool
+    def agendar(prazo: str) -> str:
+        """Agenda com prazo AAAA-MM-DD."""
+        calls.append(prazo)
+        if prazo != "2026-11-20":
+            raise ToolError("prazo inválido: use AAAA-MM-DD")
+        return "agendado"
+
+    return s
+
+
+def scripted_calls(*steps):
+    """FunctionModel que chama `agendar` com cada prazo de `steps` e depois responde "fim"."""
+    seen: list[list] = []
+
+    def fn(messages, info):
+        seen.append(list(messages))
+        if len(seen) <= len(steps):
+            return ModelResponse(parts=[ToolCallPart("agendar", {"prazo": steps[len(seen) - 1]})])
+        return ModelResponse(parts=[TextPart("fim")])
+
+    return FunctionModel(fn), seen
+
+
+async def test_tool_error_reaches_model_as_retry():
+    """Erro da ferramenta MCP (ModelRetry do Pydantic AI) volta ao modelo como nova tentativa,
+    com a mensagem do servidor; não é "ferramenta indisponível" (minor diferido do T10)."""
+    calls: list = []
+    ctx = make_ctx(allow=["agendar"], require_approval=[])
+    model, seen = scripted_calls("sexta", "2026-11-20")
+    agent = Agent(model, toolsets=build(ctx, validating_server(calls)), deps_type=AgentDeps)
+    with capture_logs() as logs:
+        res = await agent.run("x", deps=mk_deps(ctx))
+    assert calls == ["sexta", "2026-11-20"]
+    assert "prazo inválido: use AAAA-MM-DD" in str(seen[1][-1].parts[-1].content)
+    assert UNAVAILABLE not in str(returns(res))
+    assert "agendado" in returns(res)[-1]
+    assert ctx.tools_called == ["agendar"]
+    assert "mcp_tool_unavailable" not in [e["event"] for e in logs]
+
+
+async def test_tool_error_after_retries_exhausted_degrades_to_unavailable():
+    """Sem orçamento de novas tentativas o turno não vira ALL_FAILED: o modelo recebe
+    "indisponível" e responde."""
+    calls: list = []
+    ctx = make_ctx(allow=["agendar"], require_approval=[])
+    model, _ = scripted_calls("sexta", "sábado", "domingo")
+    agent = Agent(model, toolsets=build(ctx, validating_server(calls)), deps_type=AgentDeps)
+    with capture_logs() as logs:
+        res = await agent.run("x", deps=mk_deps(ctx))
+    assert res.output == "fim"
+    assert UNAVAILABLE in returns(res)
+    assert ctx.tools_called == []
+    events = [e["event"] for e in logs]
+    assert "mcp_tool_retries_exhausted" in events and "mcp_tool_unavailable" not in events
 
 
 async def test_approval_request_marked_pending_not_executed():
