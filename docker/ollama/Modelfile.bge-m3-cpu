@@ -1,0 +1,3 @@
+FROM bge-m3
+PARAMETER num_gpu 0
+PARAMETER num_ctx 8192

@@ -1,0 +1,112 @@
+name: encaixe
+
+# Toda porta publicada fica só no loopback (127.0.0.1): Postgres, Redis, Ollama, Phoenix e o
+# adaptador MCP não têm autenticação suficiente para a rede local (spec §3). Para expor a API
+# ou o Open WebUI, veja "Acesso pela rede" no README.
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17-trixie
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_dev}
+      POSTGRES_DB: encaixe
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d encaixe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8.8.4
+    ports:
+      - "127.0.0.1:56379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama:0.40.13
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      # Principal + 2 guards de conteúdo + embedder ficam carregados juntos; o padrão (3)
+      # trocava um modelo a cada requisição. O reserva, quando usado, desloca um deles.
+      OLLAMA_MAX_LOADED_MODELS: "4"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  phoenix:
+    image: arizephoenix/phoenix:21.0.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PHOENIX_SQL_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres_dev}@postgres:5432/phoenix
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_ENABLE_AUTH: "false"
+      DO_NOT_TRACK: "1"
+    ports:
+      - "127.0.0.1:6006:6006"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6006/healthz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  mcp-tarefas:
+    profiles: ["tools"]
+    build: ./mcp-adapters/exemplo-tarefas
+    ports:
+      - "127.0.0.1:8765:8765"
+
+  open-webui:
+    profiles: ["ui"]
+    image: ghcr.io/open-webui/open-webui:v0.12.5
+    # Rede do host: alcança a API em 127.0.0.1:8100 (o `make api` escuta só no loopback, que
+    # um container na rede bridge não alcança) e escuta em 127.0.0.1:38080 sem publicar porta.
+    # OPEN_WEBUI_HOST=0.0.0.0 o expõe na rede local (README, "Acesso pela rede").
+    network_mode: host
+    environment:
+      HOST: ${OPEN_WEBUI_HOST:-127.0.0.1}
+      PORT: "38080"
+      OPENAI_API_BASE_URL: http://127.0.0.1:8100/v1
+      OPENAI_API_KEY: ${ENCAIXE_WEBUI_API_KEY:-dev-key}
+      ENABLE_OLLAMA_API: "false"
+      SCARF_NO_ANALYTICS: "true"
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+    volumes:
+      - openwebui:/app/backend/data
+
+volumes:
+  pgdata:
+  redisdata:
+  ollama:
+  openwebui:
