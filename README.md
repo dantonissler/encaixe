@@ -173,7 +173,7 @@ O alvo roda, em ordem:
 2. o promptfoo com `apps/<id>/evals/` (resultado em `evals/results/<id>.json`);
 3. `evals/multiturn.py`: casos de escrita em vários turnos (abre a conversa, pede a criação, responde "sim" e confere no adaptador);
 4. `evals/retrieval.py`: recall@5, MRR e vazamento de ACL do retriever real, sem LLM;
-5. `evals/compare_baseline.py`: compara com `evals/baselines/<id>.json`. Falha se o pass rate, o recall@5 ou o MRR caírem mais de 5 pontos, ou se houver **qualquer** vazamento de ACL.
+5. `evals/compare_baseline.py`: compara com `evals/baselines/<id>.json`. Falha se o pass rate, o recall@5 ou o MRR caírem mais de 7 pontos (≈2 casos em 30: o `qwen3.5:4b` oscila 1–2 casos entre rodadas sem mudança nenhuma; `--max-drop` muda o limite), ou se houver **qualquer** vazamento de ACL.
 
 `--update` no `compare_baseline.py` grava o resultado atual como baseline (recusado se houver vazamento de ACL).
 

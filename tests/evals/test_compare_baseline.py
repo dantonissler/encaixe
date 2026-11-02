@@ -78,3 +78,20 @@ def test_acl_leak_fails_regardless_of_baseline(tmp_path):
     assert cb.main(["--app", "app"], **args) == 1  # sem baseline
     assert cb.main(["--app", "app", "--update"], **args) == 1  # nem grava
     assert not (tmp_path / "b" / "app.json").exists()
+
+
+def test_default_tolerance_absorbs_two_cases_in_thirty_but_not_three():
+    """0,07 ≈ 2 casos em 30: o ruído observado entre rodadas do qwen3.5:4b foi de 1–2 casos."""
+    base = {"pass_rate": 1.0, "recall@5": 1.0, "mrr": 1.0}
+    two_down = {"pass_rate": 28 / 30, "recall@5": 1.0, "mrr": 1.0, "acl_leaks": 0}
+    three_down = {"pass_rate": 27 / 30, "recall@5": 1.0, "mrr": 1.0, "acl_leaks": 0}
+    assert cb.compare(two_down, base) == []
+    assert [p.split(":")[0] for p in cb.compare(three_down, base)] == ["pass_rate"]
+    assert cb.compare(two_down, base, max_drop=0.05)  # a tolerância antiga reprovava 2 casos
+
+
+def test_cli_default_max_drop_matches_compare():
+    import inspect
+
+    default = inspect.signature(cb.compare).parameters["max_drop"].default
+    assert default == cb.DEFAULT_MAX_DROP == 0.07

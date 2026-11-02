@@ -128,7 +128,7 @@ Com a saída por ferramenta o reserva na CPU não cabe no prazo nos turnos de do
 | MRR | **1,000** | **1,000** |
 | Vazamentos de ACL (3 casos sem o grupo `rh`) | **0** | **0** |
 
-A rodada "Final" foi feita uma vez só: a segunda foi interrompida no meio porque a infraestrutura foi derrubada por fora. As rodadas "Camadas 1" e "Camadas 2" deram 30/30 as duas. O baseline em [`evals/baselines/exemplo.json`](../evals/baselines/exemplo.json) foi gravado com o menor pass rate das duas (1,000, recall@5 1,000, MRR 1,000, 0 vazamento). Com a tolerância de 5 pontos do `compare_baseline.py`, uma rodada com 28/30 (0,93) já reprova: o `qwen3.5:4b` já oscilou 1–2 casos entre rodadas (ver as colunas anteriores), então o gate pode reprovar sem regressão real.
+A rodada "Final" foi feita uma vez só: a segunda foi interrompida no meio porque a infraestrutura foi derrubada por fora. As rodadas "Camadas 1" e "Camadas 2" deram 30/30 as duas. O baseline em [`evals/baselines/exemplo.json`](../evals/baselines/exemplo.json) foi gravado com o menor pass rate das duas (1,000, recall@5 1,000, MRR 1,000, 0 vazamento). O `qwen3.5:4b` oscila 1–2 casos entre rodadas sem mudança nenhuma (ver as colunas anteriores); por isso a tolerância do `compare_baseline.py` passou de 5 para 7 pontos (≈2 casos em 30): 28/30 passa, 27/30 reprova.
 
 Nas rodadas "Camadas", os 2 casos de escrita passaram pela primeira vez: o guard em camadas não recusa mais "Crie uma tarefa: revisar contrato <código>, prazo sexta". A latência média dobrou (8,6 s → 15–16 s) por causa do ShieldGemma na CPU (~2,9 s na entrada e ~7 s na saída; ver "Disputa de modelos").
 

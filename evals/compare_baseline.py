@@ -17,9 +17,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 METRICS = ("pass_rate", "recall@5", "mrr")  # acl_leaks é checado à parte (deve ser 0)
+# ≈2 casos em 30; ruído observado entre rodadas: 1–2 casos.
+DEFAULT_MAX_DROP = 0.07
 
 
-def compare(current: dict, baseline: dict, max_drop: float = 0.05) -> list[str]:
+def compare(current: dict, baseline: dict, max_drop: float = DEFAULT_MAX_DROP) -> list[str]:
     """Regressões: métricas que caíram mais de `max_drop` (absoluto) abaixo da baseline."""
     problems = []
     for name in METRICS:
@@ -77,7 +79,7 @@ def main(
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", required=True)
     parser.add_argument("--update", action="store_true", help="grava os resultados como baseline")
-    parser.add_argument("--max-drop", type=float, default=0.05)
+    parser.add_argument("--max-drop", type=float, default=DEFAULT_MAX_DROP)
     args = parser.parse_args(argv)
 
     try:
