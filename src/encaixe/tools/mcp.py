@@ -51,9 +51,11 @@ class McpGuardToolset(WrapperToolset[AgentDeps]):
                 result = await super().call_tool(name, tool_args, ctx, tool)
             except ModelRetry as exc:
                 # Erro da ferramenta (ex.: argumento inválido): o modelo corrige e tenta de novo.
+                # O texto vem do adaptador: é dado não confiável como qualquer resultado (§6.6).
                 # Sem orçamento, o Pydantic AI encerraria a execução; aí vira "indisponível".
                 if ctx.retry < tool.max_retries:
-                    raise
+                    safe = await sanitize_tool_result(deps.injection, name, exc.message, deps.boundary)
+                    raise ModelRetry(safe) from exc
                 log.warning("mcp_tool_retries_exhausted", tool=name, server=self.server, error=exc.message)
                 if span is not None:
                     span.set_attribute("tool.retries_exhausted", True)
