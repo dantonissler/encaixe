@@ -100,6 +100,11 @@ def not_found_reason(ctx: RequestContext, output: RespostaBase) -> str | None:
     return None
 
 
+def uses_client_history(ctx: RequestContext) -> bool:
+    """Sem identidade de conversa o histórico vem do cliente (spec §7): não confiável."""
+    return not (ctx.has_conversation_identity and ctx.conversation_id)
+
+
 def may_write(ctx: RequestContext) -> bool:
     """Ferramentas de escrita e resolução de aprovações: só numa conversa com identidade de
     servidor e de um usuário identificado. Sem `user_ref`, quem repete o `X-Conversation-Id`
@@ -181,7 +186,9 @@ class Turn:
     persist_user: str = ""
     pii_flagged: bool = False
     summary: str | None = None
-    history: list[ChatMessage] = field(default_factory=list)
+    history: list[ChatMessage] = field(default_factory=list)  # do servidor (turnos de chat)
+    # do cliente, sem id de conversa: já cortado pelo orçamento; vira bloco de dados
+    client_history: list[ChatMessage] = field(default_factory=list)
     cache_key: str | None = None
     output: RespostaBase | None = None
     synthetic: bool = False  # resposta fixa: sem guards de saída e sem cache

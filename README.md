@@ -88,7 +88,7 @@ Traces: abra http://localhost:6006 (projeto `default`). Cada requisição gera a
 ENCAIXE_WEBUI_API_KEY=enc_... docker compose --profile ui up -d open-webui   # http://localhost:38080
 ```
 
-O Open WebUI não manda identidade de usuário nem id de conversa. Ele roda no modo sem identidade: vê só documentos `app:*`, recebe o histórico do próprio cliente como não confiável e nunca ganha ferramentas de escrita; cada mensagem cria uma conversa nova no banco. Serve para testes internos.
+O Open WebUI não manda identidade de usuário nem id de conversa. Ele roda no modo sem identidade: vê só documentos `app:*`, recebe o histórico do próprio cliente como bloco de dados não confiável (checado pelos guards de entrada) e nunca ganha ferramentas de escrita; cada mensagem cria uma conversa nova no banco. Serve para testes internos.
 
 ### Acesso pela rede
 
@@ -136,7 +136,7 @@ curl -s http://localhost:8100/v1/chat/completions \
 ```
 
 - **Com `X-Conversation-Id`**, o servidor é a fonte da verdade: usa o histórico guardado e lê do array `messages` só a última mensagem do usuário. A conversa pertence ao `user_ref` que a criou; outro usuário recebe 404.
-- **Sem id**, o bot cria uma conversa nova, aceita o histórico enviado pelo cliente como não confiável e desliga as ferramentas de escrita nessa requisição.
+- **Sem id**, o bot cria uma conversa nova, aceita o histórico enviado pelo cliente como não confiável e desliga as ferramentas de escrita nessa requisição. Esse histórico (cortado pelo orçamento `context.budget.history`) entra no prompt como **um único bloco de dados delimitado**, nunca como turnos da conversa: um turno `assistant` forjado não vira fala do modelo. Antes, os turnos do usuário desse histórico passam juntos, uma vez, pelos guards de entrada da app (menos `normalize`): um turno anterior com injeção ou pedido nocivo recusa a requisição inteira, e dado pessoal nele tira a resposta do cache.
 - `stream: true` devolve SSE (`chat.completion.chunk`), terminando em `data: [DONE]`. Erros no meio do stream viram uma mensagem fixa, nunca um 500.
 - `response_format`: `{"type": "json_object"}` devolve o JSON da saída estruturada no `content`; `"toon"` devolve o mesmo em TOON.
 - Identidade também pode ir no corpo: `user` ou `metadata.user_ref`, `metadata.groups` (lista) e `metadata.conversation_id`. **Os headers vencem:** o corpo só vale quando o header correspondente não veio. Com o header presente (mesmo vazio), um campo do corpo que divirja dele é recusado (400).

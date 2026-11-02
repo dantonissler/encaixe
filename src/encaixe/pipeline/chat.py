@@ -13,7 +13,12 @@ import structlog
 from encaixe.agent.factory import build_agent, run_outcome_on_limit, usage_limits_for
 from encaixe.cache.exact import exact_key, is_cacheable
 from encaixe.context.aliases import resolve_citations
-from encaixe.context.builder import BuiltContext, ContextBuilder, conversation_messages
+from encaixe.context.builder import (
+    BuiltContext,
+    ContextBuilder,
+    conversation_messages,
+    split_history,
+)
 from encaixe.context.untrusted import new_boundary
 from encaixe.core.pii import mask_pii
 from encaixe.core.types import ChatMessage, RequestContext
@@ -45,6 +50,7 @@ from encaixe.pipeline.stages import (
     span_attr,
     static_output,
     text_answer_allowed,
+    uses_client_history,
 )
 from encaixe.tools.native import AgentDeps
 
@@ -52,6 +58,10 @@ if TYPE_CHECKING:
     from encaixe.wiring import Deps
 
 log = structlog.get_logger(__name__)
+
+# Guards de entrada que não rodam sobre o histórico do cliente: normalize reescreve o texto
+# (e o limite de tamanho é da mensagem atual; o histórico já vem cortado pelo orçamento).
+CLIENT_HISTORY_SKIPPED_GUARDS = frozenset({"normalize"})
 
 
 class ChatPipeline:
@@ -87,6 +97,8 @@ class ChatPipeline:
         turn = Turn(make_releaser(ctx, self.deps.settings), spec, fallbacks)
 
         refusal = await self._input_guards(ctx, turn)
+        if refusal is None:
+            refusal = await self._client_history_guards(ctx, turn)
         if refusal is not None:
             yield TextDelta(refusal)
             yield Final(static_output(refusal), ctx.conversation_id, trace_id)
@@ -141,6 +153,37 @@ class ChatPipeline:
                 turn.persist_user, turn.pii_flagged = r.redacted_text, True
         return None
 
+    @traced("pipeline.client_history_guards")
+    async def _client_history_guards(self, ctx: RequestContext, turn: Turn) -> str | None:
+        """Sem id de conversa o histórico vem do cliente e é não confiável (spec §6.9, §7).
+        Os turnos do usuário que vão chegar ao modelo (já cortados pelo orçamento) passam uma
+        vez, juntos, pelos guards de entrada da app. Nada é reescrito; `pii` só detecta (a
+        resposta não vai para o cache)."""
+        if not uses_client_history(ctx):
+            return None
+        budget = ctx.app.config.context.budget.history
+        _, turn.client_history, _ = split_history(
+            conversation_messages(ctx.client_history), budget, self.deps.counter
+        )
+        text = "\n\n".join(m.content for m in turn.client_history if m.role == "user")
+        g = ctx.app.config.guardrails
+        names = [n for n in g.input if n not in CLIENT_HISTORY_SKIPPED_GUARDS]
+        if not text or not names:
+            return None
+        results = await run_guards(
+            names,
+            text,
+            ctx,
+            settings=self.deps.settings,
+            fail_closed=g.on_guard_unavailable == "block",
+        )
+        ctx.guard_results.extend(results)
+        hit = blocked(results)
+        if hit is None:
+            return None
+        span_attr("guard.blocked", f"historico:{hit.guard}")
+        return GUARD_UNAVAILABLE if hit.reason == "unavailable" else REFUSAL_INPUT
+
     # --- 2. aprovação pendente --------------------------------------------------------------
 
     @traced("pipeline.approvals")
@@ -160,9 +203,8 @@ class ChatPipeline:
 
     @traced("pipeline.history")
     async def _load_history(self, ctx: RequestContext, turn: Turn) -> None:
-        if not (ctx.has_conversation_identity and ctx.conversation_id):
-            turn.history = conversation_messages(ctx.client_history)
-            return
+        if uses_client_history(ctx):
+            return  # turn.client_history já veio de _client_history_guards
         store, app_id = self.deps.history_store, ctx.app.config.id
         try:
             stored = await store.get_summary(app_id, ctx.conversation_id)
@@ -184,7 +226,7 @@ class ChatPipeline:
             return None
         if ctx.extra_context or turn.pii_flagged:
             return None  # nunca seria gravado: is_cacheable recusa
-        history = conversation_messages(turn.history)
+        history = [*conversation_messages(turn.history), *turn.client_history]
         if turn.summary:
             history = [ChatMessage("system", turn.summary), *history]
         try:
@@ -238,6 +280,7 @@ class ChatPipeline:
             retrieved=ctx.retrieved,
             extra_context=ctx.extra_context,
             user_message=ctx.user_message,
+            client_history=turn.client_history,
         )
         # A ferramenta buscar_documentos continua a numeração (T3, T4…) neste mesmo mapa.
         ctx.citation_aliases = dict(built.citation_aliases)
