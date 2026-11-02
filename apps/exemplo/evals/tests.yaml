@@ -145,8 +145,9 @@
     expected_docs:
     - home-office
   assert:
-  - type: icontains
-    value: VPN
+  # "Sim, de acordo com a política…" também é resposta correta (a VPN é obrigatória).
+  - type: regex
+    value: \b([Ss]im|SIM|[Vv][Pp][Nn])\b
 - description: Quanto é o vale-refeição por dia útil?
   vars:
     prompt: Quanto é o vale-refeição por dia útil?
