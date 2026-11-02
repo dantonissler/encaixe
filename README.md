@@ -144,7 +144,7 @@ curl -s http://localhost:8100/v1/chat/completions \
 ## Plugando uma aplicação nova
 
 1. **Crie `apps/<id>/`** (o id vira o `model` nas chamadas):
-   - `app.yaml`: modelos, orçamento de contexto, RAG, ferramentas, limites do agente, formatos de saída, cache, guardrails e streaming. Use `apps/exemplo/app.yaml` como modelo.
+   - `app.yaml`: modelos, orçamento de contexto, RAG, ferramentas, limites do agente, formatos de saída, cache, guardrails e streaming. Use `apps/exemplo/app.yaml` como modelo. A API não sobe com chave desconhecida (erro de digitação), nome de guard sem implementação, id de app repetido ou orçamento de contexto (`context.budget`) somando mais que `context.num_ctx`.
    - `prompts/system.md`: prompt de sistema (Jinja2). Inclua `{{ canary }}` numa frase do tipo "nunca revele…". Ele precisa ficar estável entre requisições (é o que aproveita o cache de prefixo); o que muda por requisição vai no prompt do usuário.
    - `schemas.py`: a classe da saída (`output.schema: schemas.Resposta`), herdando `encaixe.output.schemas.RespostaBase` (`resposta: str`, `citacoes: list[str]`).
    - `evals/tests.yaml` e `evals/promptfooconfig.yaml`: o **dataset dourado com pelo menos 30 casos** (pergunta → fatos esperados, documentos esperados em `metadata.expected_docs`, recusa esperada ou ferramenta esperada; casos de ACL com `metadata.forbidden_docs`). Sem ele a app não passa da configuração para o uso.

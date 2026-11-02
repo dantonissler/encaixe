@@ -4,7 +4,8 @@ models:
   fallbacks: [ollama:llama3.2-3b-cpu]
 context:
   num_ctx: 8192
-  budget: {system: 1500, summary: 500, history: 2500, rag: 2500, user: 800, output: 1000}
+  # soma ≤ num_ctx (validado na carga); o system prompt renderizado tem ~530 tokens
+  budget: {system: 800, summary: 500, history: 2500, rag: 2500, user: 800, output: 1000}
 rag:
   enabled: true
   top_k: 10

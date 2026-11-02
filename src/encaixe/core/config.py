@@ -8,7 +8,7 @@ from typing import Literal
 
 import jinja2
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from encaixe.output.schemas import RespostaBase
 
@@ -17,13 +17,20 @@ class AppConfigError(Exception):
     pass
 
 
-class ModelsConfig(BaseModel):
+class _Strict(BaseModel):
+    """Chave desconhecida no app.yaml (erro de digitação) é erro na carga, não silêncio."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ModelsConfig(_Strict):
     primary: str
     fallbacks: list[str] = Field(default_factory=list)
 
 
-class BudgetConfig(BaseModel):
-    system: int = 1500
+class BudgetConfig(_Strict):
+    # A soma das seções cabe em `context.num_ctx` (validado na carga).
+    system: int = 800
     summary: int = 500
     history: int = 2500
     rag: int = 2500
@@ -31,53 +38,53 @@ class BudgetConfig(BaseModel):
     output: int = 1000
 
 
-class ContextConfig(BaseModel):
+class ContextConfig(_Strict):
     num_ctx: int = 8192
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
 
 
-class RagConfig(BaseModel):
+class RagConfig(_Strict):
     enabled: bool = True
     top_k: int = 20
     rerank_top_n: int = 5
     require_citations: bool = True
 
 
-class McpServerConfig(BaseModel):
+class McpServerConfig(_Strict):
     name: str
     url: str
     allow: list[str] = Field(default_factory=list)
     require_approval: list[str] = Field(default_factory=list)
 
 
-class ToolsConfig(BaseModel):
+class ToolsConfig(_Strict):
     native: list[str] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 
 
-class AgentConfig(BaseModel):
+class AgentConfig(_Strict):
     max_steps: int = 8
     max_tool_calls: int = 12
     timeout_s: int = 60
 
 
-class OutputConfig(BaseModel):
+class OutputConfig(_Strict):
     schema_path: str = Field(default="schemas.Resposta", alias="schema")
     formats: list[str] = Field(default_factory=lambda: ["json", "toon"])
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
-class ExactCacheConfig(BaseModel):
+class ExactCacheConfig(_Strict):
     enabled: bool = True
     ttl_s: int = 3600
 
 
-class CacheConfig(BaseModel):
+class CacheConfig(_Strict):
     exact: ExactCacheConfig = Field(default_factory=ExactCacheConfig)
 
 
-class GuardrailsConfig(BaseModel):
+class GuardrailsConfig(_Strict):
     input: list[str] = Field(
         default_factory=lambda: ["normalize", "prompt_injection", "content_safety", "pii"]
     )
@@ -87,11 +94,11 @@ class GuardrailsConfig(BaseModel):
     on_guard_unavailable: Literal["block", "allow"] = "block"
 
 
-class StreamingConfig(BaseModel):
+class StreamingConfig(_Strict):
     mode: Literal["buffered_sentences", "strict"] = "buffered_sentences"
 
 
-class AppConfig(BaseModel):
+class AppConfig(_Strict):
     id: str
     models: ModelsConfig
     context: ContextConfig = Field(default_factory=ContextConfig)
@@ -136,6 +143,30 @@ def _load_schema(root: Path, ref: str) -> type[RespostaBase]:
     return cls
 
 
+def validate_app_config(config: AppConfig) -> list[str]:
+    """Problemas que o schema sozinho não pega (vazio = config válida): nome de guard sem
+    implementação registrada e orçamento de contexto maior que `context.num_ctx`."""
+    from encaixe.core.registry import available
+    from encaixe.guardrails import runner  # noqa: F401 - registra os guards
+
+    known = set(available("guard"))
+    problems = []
+    for stage in ("input", "output"):
+        for name in getattr(config.guardrails, stage):
+            if name not in known:
+                problems.append(
+                    f"guard desconhecido em guardrails.{stage}: '{name}' "
+                    f"(disponíveis: {', '.join(sorted(known))})"
+                )
+    ctx = config.context
+    total = sum(ctx.budget.model_dump().values())
+    if total > ctx.num_ctx:
+        problems.append(
+            f"context.budget soma {total} tokens, mais que context.num_ctx ({ctx.num_ctx})"
+        )
+    return problems
+
+
 def _load_app(root: Path) -> LoadedApp:
     yaml_path = root / "app.yaml"
     try:
@@ -143,6 +174,8 @@ def _load_app(root: Path) -> LoadedApp:
         config = AppConfig.model_validate(raw)
     except (yaml.YAMLError, ValidationError, OSError, TypeError) as exc:
         raise AppConfigError(f"app.yaml inválido em {root}: {exc}") from exc
+    if problems := validate_app_config(config):
+        raise AppConfigError(f"app.yaml inválido em {root}: " + "; ".join(problems))
     prompt_path = root / "prompts" / "system.md"
     try:
         prompt_text = prompt_path.read_text(encoding="utf-8")
@@ -165,5 +198,9 @@ def load_apps(apps_dir: Path) -> dict[str, LoadedApp]:
     apps: dict[str, LoadedApp] = {}
     for yaml_path in sorted(Path(apps_dir).glob("*/app.yaml")):
         app = _load_app(yaml_path.parent)
+        if (other := apps.get(app.config.id)) is not None:
+            raise AppConfigError(
+                f"id de app repetido '{app.config.id}' em {other.root} e {app.root}"
+            )
         apps[app.config.id] = app
     return apps

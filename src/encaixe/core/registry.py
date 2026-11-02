@@ -31,3 +31,8 @@ def create(kind: str, name: str, **kwargs: Any) -> Any:
     if name not in impls:
         raise UnknownImplementationError(kind, name, sorted(impls))
     return impls[name](**kwargs)
+
+
+def available(kind: str) -> list[str]:
+    """Nomes registrados para `kind` (ordenados)."""
+    return sorted(_REGISTRY.get(kind, {}))
