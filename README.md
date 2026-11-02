@@ -20,7 +20,7 @@ Plataforma de agentes de IA que roda 100% local, montada em 13 peças plugáveis
 | 10 | Prompt caching | System prompt estável (cache de prefixo do Ollama) + cache exato de respostas e cache de embeddings no Redis |
 | 11 | Fallback | `qwen3.5:4b` (GPU) → `llama3.2:3b` (CPU) com circuit breaker; mensagens fixas quando tudo falha |
 | 12 | Evals | promptfoo (28 casos) + 2 casos de escrita em vários turnos, recall@5 e MRR do RAG, contagem de vazamento de ACL, baseline versionado e hook de `pre-push` |
-| 13 | Observabilidade | OpenTelemetry com convenções OpenInference → Arize Phoenix; logs JSON (structlog) com dados pessoais mascarados |
+| 13 | Observabilidade | OpenTelemetry com convenções OpenInference → Arize Phoenix; logs JSON (structlog). Dados pessoais (CPF, CNPJ, e-mail, telefone) são mascarados nos logs e nos traces antes de saírem do processo: o exporter manda ao Phoenix só cópias dos spans com atributos, eventos e status mascarados |
 
 Como roda: o Docker Compose sobe a infraestrutura (Postgres, Redis, Ollama, Phoenix e, por perfil, o adaptador MCP de exemplo e o Open WebUI). A API e o worker rodam no host com `uv`. O reranker e o detector de injeção rodam dentro do processo da API, na CPU. A GPU fica para o modelo principal. Na partida, a API aquece o que as apps usam (reranker, modelo principal, os dois guards de conteúdo e `bge-m3`) antes de aceitar requisições.
 
